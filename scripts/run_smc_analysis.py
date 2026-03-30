@@ -471,7 +471,7 @@ def run_full_analysis():
     }
 
     # Generate playbook (uses results data, no new fetches)
-    print("\n  Generating 24h playbook...")
+    print("\n  Generating 12h playbook...")
     results["playbook"] = _generate_playbook(results)
     p = results["playbook"]
     print(f"  Scenarios: {p['primary']['name']} ({p['primary']['probability']}%) | "
@@ -509,26 +509,45 @@ def _nearest_intervention(price):
     return nearest if abs(nearest - price) <= 5.0 else None
 
 
-def _remaining_sessions():
-    """Return list of remaining trading sessions based on current JST time."""
+def _next_two_sessions():
+    """Return the next 2 trading sessions based on current JST time.
+
+    Session schedule (JST):
+      Tokyo  09:00-15:00
+      London 17:00-02:00 (next day)
+      NY     22:00-07:00 (next day)
+
+    Returns list of 2 session dicts with name, start, end times.
+    """
     import zoneinfo
     now = dt.datetime.now(zoneinfo.ZoneInfo("Asia/Tokyo"))
     hour = now.hour
-    sessions = []
-    # Tokyo 09:00-15:00 JST
-    if hour < 15:
-        label = "Tokyo" if hour < 9 else "Tokyo (remaining)"
-        sessions.append(label)
-    # London 17:00-02:00 JST (next day)
-    if hour < 2 or hour < 17:
-        sessions.append("London")
-    # New York 22:00-07:00 JST (next day)
-    if hour < 7 or hour < 22:
-        sessions.append("New York")
-    # If all sessions passed (very early morning after NY close), show next cycle
-    if not sessions:
-        sessions = ["Tokyo", "London", "New York"]
-    return sessions
+
+    # Ordered cycle of sessions — pick the next 2 from current time
+    ALL_SESSIONS = [
+        {"name": "Tokyo",    "start": "09:00", "end": "15:00"},
+        {"name": "London",   "start": "17:00", "end": "02:00"},
+        {"name": "New York", "start": "22:00", "end": "07:00"},
+    ]
+
+    # Determine which session we're in or approaching
+    if hour < 7:        # After NY open, before NY close — in NY
+        idx = 2         # Current = NY, next cycle starts with Tokyo
+    elif hour < 9:      # After NY close, before Tokyo open
+        idx = 0         # Next = Tokyo
+    elif hour < 15:     # In Tokyo session
+        idx = 0         # Current = Tokyo
+    elif hour < 17:     # After Tokyo close, before London open
+        idx = 1         # Next = London
+    elif hour < 22:     # In London session
+        idx = 1         # Current = London
+    else:               # >= 22, in NY session
+        idx = 2         # Current = NY
+
+    # Return current/next + the one after
+    s1 = ALL_SESSIONS[idx]
+    s2 = ALL_SESSIONS[(idx + 1) % 3]
+    return [s1, s2]
 
 
 def _generate_playbook(results):
@@ -603,6 +622,7 @@ def _generate_playbook(results):
     entry_price = ep["entry"] if ep else None
     stop_price = ep["stop"] if ep else None
     t1_price = ep["t1_price"] if ep else None
+    t2_price = ep.get("t2_price") if ep else None
     midpoint = pd_details.get("midpoint", price)
     intv_level = _nearest_intervention(price)
 
@@ -617,56 +637,55 @@ def _generate_playbook(results):
     if ez:
         zone_desc = f"{ez['zone_type']} at {ez['zone_bottom']:.2f}-{ez['zone_top']:.2f}"
 
-    # ── Session descriptions ─────────────────────────────────────────────
-    remaining = _remaining_sessions()
+    # ── Next 2 sessions ────────────────────────────────────────────────
+    two_sessions = _next_two_sessions()
+    s1_name = two_sessions[0]["name"]
+    s2_name = two_sessions[1]["name"]
 
     # ── Primary Scenario ─────────────────────────────────────────────────
     if ep and ez:
+        zone_top = ez["zone_top"]
+        zone_str = f"{ez['zone_bottom']:.2f}-{ez['zone_top']:.2f} {ez['zone_type']}"
         if direction == "LONG":
             primary_name = "Pullback to OB and Rally"
-            tokyo_p = (f"Price drifts lower from {price:.2f} toward "
-                       f"{ez['zone_bottom']:.2f}-{ez['zone_top']:.2f} {ez['zone_type']}.")
-            london_p = (f"If 15M confirms bullish at the zone, enter long "
-                        f"targeting {t1_price:.2f}. Key session for the move.")
-            ny_p = f"Continuation toward {t1_price:.2f} or profit-taking pullback."
-            trigger_p = f"15M bullish engulfing or ChoCH at {ez['zone_bottom']:.2f}-{ez['zone_top']:.2f}"
+            s1_p = (f"Price drifts lower from {price:.2f} toward {zone_str}.")
+            s2_p = (f"If 15M confirms bullish at the zone, enter long "
+                    f"targeting {t1_price:.2f}. Key session for the move.")
+            trigger_p = f"15M bullish engulfing or ChoCH at {zone_str}"
             action_p = f"Enter long at {entry_price:.2f}, stop {stop_price:.2f}, target {t1_price:.2f}"
             key_level_p = f"{entry_price:.2f}"
             inval_p = f"Price breaks below {stop_price:.2f}"
         else:
             primary_name = "Rally to OB and Drop"
-            tokyo_p = (f"Price drifts higher from {price:.2f} toward "
-                       f"{ez['zone_bottom']:.2f}-{ez['zone_top']:.2f} {ez['zone_type']}.")
-            london_p = (f"If 15M confirms bearish at the zone, enter short "
-                        f"targeting {t1_price:.2f}. Key session for the move.")
-            ny_p = f"Continuation toward {t1_price:.2f} or short covering bounce."
-            trigger_p = f"15M bearish engulfing or ChoCH at {ez['zone_bottom']:.2f}-{ez['zone_top']:.2f}"
+            s1_p = (f"Price drifts higher from {price:.2f} toward {zone_str}.")
+            s2_p = (f"If 15M confirms bearish at the zone, enter short "
+                    f"targeting {t1_price:.2f}. Key session for the move.")
+            trigger_p = f"15M bearish engulfing or ChoCH at {zone_str}"
             action_p = f"Enter short at {entry_price:.2f}, stop {stop_price:.2f}, target {t1_price:.2f}"
             key_level_p = f"{entry_price:.2f}"
             inval_p = f"Price breaks above {stop_price:.2f}"
-        # Waypoints: drift toward entry, then move toward target
-        total_move = (t1_price - price) if t1_price else sign * 0.50
+        # Waypoints (4 pts): current → entry zone → consolidation → T1
         wp_primary = [
             price,
-            price + total_move * 0.15,
-            price + total_move * 0.65,
-            price + total_move * 0.95,
+            zone_top,                                        # S1: drift to entry zone
+            zone_top + sign * 0.02,                          # S1/S2 boundary: consolidation
+            t1_price,                                        # S2: move to T1
         ]
     else:
         primary_name = "Range-Bound Near Current Level"
-        tokyo_p = f"Price oscillates near {price:.2f}, no clear directional trigger."
-        london_p = "No entry zone reached — watch for structure development."
-        ny_p = f"Likely remains within {price - 0.30:.2f}-{price + 0.30:.2f} range."
+        s1_p = f"Price oscillates near {price:.2f}, no clear directional trigger."
+        s2_p = "No entry zone reached — watch for structure development."
         trigger_p = "New BOS or ChoCH on 15M"
-        action_p = "Wait — no setup. Re-evaluate after NY close."
+        action_p = "Wait — no setup."
         key_level_p = f"{midpoint:.2f} (midpoint)"
         inval_p = "N/A — no active trade"
-        wp_primary = [price, price - sign * 0.10, price + sign * 0.15, price + sign * 0.10]
+        wp_primary = [price, price - sign * 0.10, price - sign * 0.05,
+                      price + sign * 0.10]
 
     primary = {
         "name": primary_name,
         "probability": int(round(p_primary * 100)),
-        "sessions": {"Tokyo": tokyo_p, "London": london_p, "New York": ny_p},
+        "sessions": {s1_name: s1_p, s2_name: s2_p},
         "key_level": key_level_p,
         "trigger": trigger_p,
         "action": action_p,
@@ -676,52 +695,53 @@ def _generate_playbook(results):
     }
 
     # ── Alternative Scenario ─────────────────────────────────────────────
-    # Deeper entry via liquidity sweep or different path
     if direction == "LONG":
         sweep_target = nearest_eql
         alt_name = f"Liquidity Sweep Below {sweep_target:.2f}"
-        tokyo_a = (f"Price drops through entry zone, sweeps {sweep_target:.2f} "
-                   f"sell-stop liquidity.")
-        london_a = ("If displacement candle after sweep, deeper entry with "
-                    "better R:R from lower zone.")
-        ny_a = f"Rally toward {nearest_eqh:.2f} from the deeper base."
+        s1_a = (f"Price drops through entry zone, sweeps {sweep_target:.2f} "
+                f"sell-stop liquidity.")
+        s2_a = ("If displacement candle after sweep, deeper entry with "
+                "better R:R from lower zone.")
         trigger_a = f"Sweep of {sweep_target:.2f} + bullish displacement on 5M"
         deeper_entry = sweep_target + 0.05
         action_a = (f"Wait for sweep, enter at {deeper_entry:.2f}, "
                     f"stop {sweep_target - 0.20:.2f}, target {nearest_eqh:.2f}")
         key_level_a = f"{sweep_target:.2f}"
         inval_a = f"Price holds below {sweep_target - 0.30:.2f} after sweep"
+        # Waypoints (4 pts): current → EQL sweep → V-bottom → recovery
+        recovery_level = price + (nearest_eqh - price) * 0.4
         wp_alt = [
             price,
-            sweep_target,
-            price + (nearest_eqh - price) * 0.4,
-            nearest_eqh * 0.98 + price * 0.02,
+            sweep_target,                                    # S1: drop to EQL
+            sweep_target + 0.02,                             # V-bottom
+            recovery_level,                                  # S2: rally back
         ]
     else:
         sweep_target = nearest_eqh
         alt_name = f"Liquidity Sweep Above {sweep_target:.2f}"
-        tokyo_a = (f"Price rallies through entry zone, sweeps {sweep_target:.2f} "
-                   f"buy-stop liquidity.")
-        london_a = ("If displacement candle after sweep, deeper entry with "
-                    "better R:R from higher zone.")
-        ny_a = f"Drop toward {nearest_eql:.2f} from the higher base."
+        s1_a = (f"Price rallies through entry zone, sweeps {sweep_target:.2f} "
+                f"buy-stop liquidity.")
+        s2_a = ("If displacement candle after sweep, deeper entry with "
+                "better R:R from higher zone.")
         trigger_a = f"Sweep of {sweep_target:.2f} + bearish displacement on 5M"
         deeper_entry = sweep_target - 0.05
         action_a = (f"Wait for sweep, enter at {deeper_entry:.2f}, "
                     f"stop {sweep_target + 0.20:.2f}, target {nearest_eql:.2f}")
         key_level_a = f"{sweep_target:.2f}"
         inval_a = f"Price holds above {sweep_target + 0.30:.2f} after sweep"
+        # Waypoints (4 pts): current → EQH sweep → V-top → recovery
+        recovery_level = price + (nearest_eql - price) * 0.4
         wp_alt = [
             price,
-            sweep_target,
-            price + (nearest_eql - price) * 0.4,
-            nearest_eql * 0.98 + price * 0.02,
+            sweep_target,                                    # S1: rally to EQH
+            sweep_target - 0.02,                             # V-top
+            recovery_level,                                  # S2: drop back
         ]
 
     alternative = {
         "name": alt_name,
         "probability": int(round(p_alt * 100)),
-        "sessions": {"Tokyo": tokyo_a, "London": london_a, "New York": ny_a},
+        "sessions": {s1_name: s1_a, s2_name: s2_a},
         "key_level": key_level_a,
         "trigger": trigger_a,
         "action": action_a,
@@ -733,29 +753,39 @@ def _generate_playbook(results):
     # ── Tail Risk Scenario ───────────────────────────────────────────────
     if bias.get("intervention_risk") and intv_level:
         tail_name = "BOJ Intervention"
-        tokyo_t = f"MOF verbal escalation or rate check near {intv_level:.0f}."
-        london_t = "Full intervention — USD/JPY drops 200-400 pips in minutes."
-        ny_t = "Choppy consolidation. Intervention OBs form at 155-156."
+        s1_t = f"MOF verbal escalation or rate check near {intv_level:.0f}."
+        s2_t = "Full intervention — USD/JPY drops 200-400 pips in minutes."
         trigger_t = "MOF headline, Reuters/Bloomberg flash"
-        action_t = "Stay flat. Do not catch the falling knife. Wait 24h."
+        action_t = "Stay flat. Do not catch the falling knife. Wait for structure to rebuild."
         key_level_t = f"{intv_level:.2f} (intervention)"
         inval_t = "N/A — event-driven"
-        wp_tail = [price, price + 0.15, price - 1.50, price - 2.50]
+        # Waypoints (4 pts): current → drift up → intervention trigger → drop
+        wp_tail = [
+            price,
+            price + 0.30,                                    # S1: drift up
+            price + 0.50,                                    # Near intervention
+            price - 1.50,                                    # S2: vertical drop
+        ]
     else:
         tail_name = "Flash Move / Data Surprise"
-        tokyo_t = "Quiet session, no early warning."
-        london_t = "Unexpected data or headline triggers 100-150 pip spike."
-        ny_t = "Partial retracement but new structure established."
+        s1_t = "Quiet session, no early warning."
+        s2_t = "Unexpected data or headline triggers 100-150 pip spike."
         trigger_t = "Major data miss/beat or geopolitical headline"
         action_t = "Flatten all positions. Wait for structure to rebuild."
         key_level_t = f"{midpoint:.2f} (midpoint)"
         inval_t = "N/A — event-driven"
-        wp_tail = [price, price + 0.10 * sign, price - 1.20 * sign, price - 1.50 * sign]
+        # Waypoints (4 pts): current → drift → spike → partial retrace
+        wp_tail = [
+            price,
+            price + 0.10 * sign,                             # S1: quiet drift
+            price - 1.20 * sign,                             # S2: flash move
+            price - 1.00 * sign,                             # Partial retrace
+        ]
 
     tail_risk = {
         "name": tail_name,
         "probability": int(round(p_tail * 100)),
-        "sessions": {"Tokyo": tokyo_t, "London": london_t, "New York": ny_t},
+        "sessions": {s1_name: s1_t, s2_name: s2_t},
         "key_level": key_level_t,
         "trigger": trigger_t,
         "action": action_t,
@@ -772,23 +802,24 @@ def _generate_playbook(results):
         "alternative": alternative,
         "tail_risk": tail_risk,
         "generated_at": now_jst.strftime("%H:%M JST"),
-        "remaining_sessions": remaining,
+        "sessions": two_sessions,
         "current_price": price,
     }
 
 
 def _section_playbook(r):
-    """Format the Next 24h Playbook as markdown."""
+    """Format the Next 12h Playbook as markdown."""
     pb = r.get("playbook")
     if not pb:
         return ""
 
     today = dt.date.today().strftime("%Y-%m-%d")
-    remaining = ", ".join(pb["remaining_sessions"])
+    sess_names = [s["name"] for s in pb["sessions"]]
+    sess_str = " + ".join(sess_names)
     lines = [
-        "### Next 24h Playbook",
+        "### Next 12h Playbook",
         "",
-        f"> Generated at {pb['generated_at']} — remaining sessions: {remaining}",
+        f"> Generated at {pb['generated_at']} — sessions: {sess_str}",
         "",
     ]
 
@@ -796,7 +827,7 @@ def _section_playbook(r):
                         ("Tail Risk", "tail_risk")]:
         s = pb[key]
         lines.append(f"#### {label}: {s['name']} ({s['probability']}%)")
-        for sess_name in ["Tokyo", "London", "New York"]:
+        for sess_name in sess_names:
             sess_text = s["sessions"].get(sess_name, "")
             if sess_text:
                 lines.append(f"- **{sess_name}:** {sess_text}")
@@ -1397,10 +1428,13 @@ def generate_chart(results):
 
 
 def generate_playbook_chart(results):
-    """Generate the playbook scenario path chart — 3 projected paths over sessions."""
+    """Generate the playbook scenario path chart — redesigned with session columns,
+    thick paths, key-level markers, probability label boxes, and right-side Y-axis."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
     from scipy.interpolate import CubicSpline
 
     pb = results.get("playbook")
@@ -1411,141 +1445,296 @@ def generate_playbook_chart(results):
     dpi = config.get("output", {}).get("chart_dpi", 150)
 
     plt.rcParams.update({
-        "figure.facecolor": "#F8F9FA",
+        "figure.facecolor": "#FFFFFF",
         "axes.facecolor": "#FFFFFF",
         "axes.edgecolor": "#DFE6E9",
-        "axes.grid": True,
-        "grid.color": "#DFE6E9",
-        "grid.linewidth": 0.5,
-        "grid.alpha": 0.7,
+        "axes.grid": False,
         "xtick.color": "#636E72",
         "ytick.color": "#636E72",
         "text.color": "#2D3436",
-        "font.family": "Helvetica",
+        "font.family": ["Helvetica", "Arial", "DejaVu Sans"],
     })
 
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
     price = pb["current_price"]
 
-    # X control points and smooth interpolation
-    x_pts = np.array([0.0, 1.0, 2.0, 3.0])
-    x_smooth = np.linspace(0, 3, 120)
-
-    # Session background shading
-    for i, (start, end, label) in enumerate([
-        (0, 1, "Tokyo"), (1, 2, "London"), (2, 3, "New York")
-    ]):
-        if i % 2 == 0:
-            ax.axvspan(start, end, alpha=0.03, color="#636E72")
-        ax.text((start + end) / 2, 1.01, label, transform=ax.get_xaxis_transform(),
-                ha="center", va="bottom", fontsize=9, color="#636E72", fontweight="bold")
-
-    # Session dividers
-    for x_div in [1.0, 2.0]:
-        ax.axvline(x_div, color="#DFE6E9", linestyle=":", linewidth=1, zorder=1)
-
-    # Current price reference
-    ax.axhline(price, color="#95A5A6", linewidth=0.8, linestyle="-", alpha=0.5, zorder=1)
-    ax.plot(0, price, "o", color="#95A5A6", markersize=6, zorder=4)
-
-    # Y-axis: crop to ±1.0 (100 pips) around price for primary/alt focus
+    # ── Y-axis range: ±1.0 (100 pips) ──────────────────────────────────
     y_lo = price - 1.0
     y_hi = price + 1.0
 
-    # Plot primary and alternative paths (full curves)
-    for key, color, ls, lw in [
-        ("primary", "#27AE60", "-", 2.5),
-        ("alternative", "#2980B9", "--", 1.8),
-    ]:
-        s = pb[key]
-        y_pts = np.array(s["waypoints"], dtype=float)
-        cs = CubicSpline(x_pts, y_pts, bc_type="clamped")
-        y_smooth = cs(x_smooth)
-        y_smooth = np.clip(y_smooth, y_lo - 0.20, y_hi + 0.20)
-        ax.plot(x_smooth, y_smooth, color=color, linestyle=ls, linewidth=lw, zorder=3)
+    # ── Session columns (2 sessions) ───────────────────────────────────
+    two_sessions = pb["sessions"]
+    S1, S2 = 0.0, 2.25
+    S_END = 4.5
 
-        # Endpoint label
-        y_end = float(np.clip(y_pts[-1], y_lo, y_hi))
-        label_text = f"{s['name']}\n({s['probability']}%)"
-        ax.annotate(label_text, xy=(3.0, y_end), xytext=(3.08, y_end),
-                    fontsize=7, color=color, fontweight="bold",
-                    va="center", ha="left",
-                    arrowprops=dict(arrowstyle="-", color=color, lw=0.5))
+    SESSION_COLORS = {
+        "Tokyo": "#F0F4FF",
+        "London": "#F0FFF4",
+        "New York": "#FFF8F0",
+    }
 
-    # Tail risk: short stub then downward arrow at bottom of chart
-    tail = pb["tail_risk"]
-    tail_wp = np.array(tail["waypoints"], dtype=float)
-    # Draw only the initial portion that stays in view
-    cs_tail = CubicSpline(x_pts, tail_wp, bc_type="clamped")
-    y_tail_smooth = cs_tail(x_smooth)
+    session_defs = []
+    for i, sess in enumerate(two_sessions):
+        start = S1 if i == 0 else S2
+        end = S2 if i == 0 else S_END
+        bg = SESSION_COLORS.get(sess["name"], "#F8F8F8")
+        session_defs.append((start, end, sess["name"].upper(),
+                             f"{sess['start']}-{sess['end']}", bg))
 
-    # Find where path exits the visible range
-    exit_idx = len(x_smooth)
-    for i, y in enumerate(y_tail_smooth):
-        if y < y_lo - 0.05:
-            exit_idx = i
-            break
+    for start, end, name, times, bg_color in session_defs:
+        ax.axvspan(start, end, facecolor=bg_color, alpha=0.6, zorder=0)
 
-    if exit_idx > 2:
-        ax.plot(x_smooth[:exit_idx], np.clip(y_tail_smooth[:exit_idx], y_lo, y_hi + 0.20),
-                color="#E74C3C", linestyle=":", linewidth=1.8, zorder=3)
+        # Session label at top
+        ax.text((start + end) / 2, y_hi + (y_hi - y_lo) * 0.06, name,
+                ha="center", va="bottom", fontsize=11, color="#2D3436",
+                fontweight="bold", zorder=5)
+        ax.text((start + end) / 2, y_hi + (y_hi - y_lo) * 0.01, times,
+                ha="center", va="bottom", fontsize=7, color="#95A5A6", zorder=5)
 
-    # Downward arrow at the exit point (or bottom-right)
-    arrow_x = float(x_smooth[min(exit_idx, len(x_smooth) - 1)])
-    arrow_y = y_lo + 0.08
-    tail_target = min(tail_wp[-1], tail_wp[2])
-    tail_label = f"\u2193 {tail['name']}\n({tail['probability']}%) \u2192 {tail_target:.0f}-{tail_target + 2:.0f}"
-    ax.annotate(tail_label,
-                xy=(arrow_x, arrow_y), fontsize=7, color="#E74C3C",
-                fontweight="bold", va="bottom", ha="center",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
-                          edgecolor="#E74C3C", alpha=0.9))
+    # Session divider (single)
+    ax.axvline(S2, color="#B2BEC3", linestyle="--", linewidth=0.8,
+               alpha=0.6, zorder=1)
 
-    # Entry / Stop / T1 reference lines
+    # ── Horizontal gridlines (50 pip major, 25 pip minor) ───────────────
+    major_levels = np.arange(np.floor(y_lo * 2) / 2, y_hi + 0.25, 0.50)
+    minor_levels = np.arange(np.floor(y_lo * 4) / 4, y_hi + 0.125, 0.25)
+    for lvl in major_levels:
+        if y_lo <= lvl <= y_hi:
+            ax.axhline(lvl, color="#DFE6E9", linewidth=0.6, alpha=0.8, zorder=1)
+    for lvl in minor_levels:
+        if y_lo <= lvl <= y_hi and lvl not in major_levels:
+            ax.axhline(lvl, color="#DFE6E9", linewidth=0.3, alpha=0.4, zorder=1)
+
+    # ── Current price — "NOW" marker ────────────────────────────────────
+    ax.axhline(price, color="#95A5A6", linewidth=0.8, linestyle="-", alpha=0.4, zorder=1)
+    ax.plot(0, price, "o", color="#2D3436", markersize=8, zorder=6)
+    ax.axvline(0, color="#2D3436", linewidth=0.8, linestyle="-", alpha=0.3, zorder=1)
+
+    # ── Key horizontal levels ───────────────────────────────────────────
     ep = results.get("entry_plan")
-    if ep:
-        ax.axhline(ep["entry"], color="#27AE60", linewidth=0.7, linestyle="--", alpha=0.6, zorder=1)
-        ax.text(-0.12, ep["entry"], f"Entry\n{ep['entry']:.2f}", fontsize=6,
-                color="#27AE60", ha="right", va="center", fontweight="bold")
-        ax.axhline(ep["stop"], color="#E74C3C", linewidth=0.7, linestyle="--", alpha=0.6, zorder=1)
-        ax.text(-0.12, ep["stop"], f"Stop\n{ep['stop']:.2f}", fontsize=6,
-                color="#E74C3C", ha="right", va="center", fontweight="bold")
-        if ep.get("t1_price") and ep["t1_price"] <= y_hi + 0.10:
-            ax.axhline(ep["t1_price"], color="#2980B9", linewidth=0.7, linestyle="--",
-                        alpha=0.6, zorder=1)
-            ax.text(-0.12, ep["t1_price"], f"T1\n{ep['t1_price']:.2f}", fontsize=6,
-                    color="#2980B9", ha="right", va="center", fontweight="bold")
+    ez = results.get("entry_zone")
 
-    # Intervention level (if within view)
+    # Entry zone as shaded band
+    if ez:
+        z_bot = max(ez["zone_bottom"], y_lo)
+        z_top = min(ez["zone_top"], y_hi)
+        if z_bot < z_top:
+            ax.axhspan(z_bot, z_top, facecolor="#27AE60", alpha=0.10, zorder=1)
+            ax.axhline(ez["zone_bottom"], color="#27AE60", linewidth=0.6,
+                       linestyle="--", alpha=0.5, zorder=1)
+            ax.axhline(ez["zone_top"], color="#27AE60", linewidth=0.6,
+                       linestyle="--", alpha=0.5, zorder=1)
+
+    # Stop loss band (±2 pips)
+    if ep:
+        stop_lo = max(ep["stop"] - 0.02, y_lo)
+        stop_hi = min(ep["stop"] + 0.02, y_hi)
+        if stop_lo < stop_hi:
+            ax.axhspan(stop_lo, stop_hi, facecolor="#E74C3C", alpha=0.08, zorder=1)
+        ax.axhline(ep["stop"], color="#E74C3C", linewidth=0.7, linestyle="--",
+                   alpha=0.6, zorder=1)
+
+    # Target lines (right-side labels)
+    if ep and ep.get("t1_price") and y_lo <= ep["t1_price"] <= y_hi:
+        ax.axhline(ep["t1_price"], color="#2980B9", linewidth=0.7, linestyle="--",
+                   alpha=0.6, zorder=1)
+        ax.text(S_END + 0.05, ep["t1_price"], f"T1 {ep['t1_price']:.2f}",
+                fontsize=7, color="#2980B9", ha="left", va="center", fontweight="bold")
+    if ep and ep.get("t2_price") and y_lo <= ep["t2_price"] <= y_hi:
+        ax.axhline(ep["t2_price"], color="#2980B9", linewidth=0.5, linestyle=":",
+                   alpha=0.5, zorder=1)
+        ax.text(S_END + 0.05, ep["t2_price"], f"T2 {ep['t2_price']:.2f}",
+                fontsize=7, color="#2980B9", ha="left", va="center")
+
+    # Intervention level
     intv = _nearest_intervention(price)
     if intv and y_lo <= intv <= y_hi:
-        ax.axhline(intv, color="#F39C12", linewidth=0.8, linestyle=":", alpha=0.7, zorder=1)
-        ax.text(3.08, intv, f"INTV {intv:.0f}", fontsize=6,
-                color="#F39C12", ha="left", va="center")
+        ax.axhline(intv, color="#F39C12", linewidth=0.8, linestyle="--",
+                   alpha=0.7, zorder=1)
+        ax.text(S_END + 0.05, intv, f"INTV {intv:.0f}",
+                fontsize=7, color="#F39C12", ha="left", va="center", fontweight="bold")
 
-    # Liquidity levels (EQH/EQL within view)
+    # EQH / EQL liquidity levels
     for liq in results.get("liquidity_map", [])[:10]:
         lp = liq["price"]
         if liq["type"] in ("EQH", "EQL") and y_lo <= lp <= y_hi:
-            ax.axhline(lp, color="#B2BEC3", linewidth=0.5, linestyle=":", alpha=0.5, zorder=1)
-            ax.text(3.08, lp, f"{liq['type']} {lp:.2f}", fontsize=5,
-                    color="#B2BEC3", ha="left", va="center")
+            lcolor = "#E74C3C" if liq["type"] == "EQL" else "#B2BEC3"
+            ax.axhline(lp, color=lcolor, linewidth=0.5, linestyle=":",
+                       alpha=0.5, zorder=1)
+            ax.text(S_END + 0.05, lp, f"{liq['type']} {lp:.2f}",
+                    fontsize=6, color=lcolor, ha="left", va="center")
 
-    # Axis styling
+    # ── X positions for 4 waypoints per path (2 sessions) ─────────────
+    # start, mid-S1, S1/S2 boundary, end-S2
+    x_4pts = np.array([0.0, 1.2, 2.25, 4.2])
+    x_smooth = np.linspace(0, 4.2, 200)
+
+    # ── Draw paths ──────────────────────────────────────────────────────
+    path_configs = [
+        ("primary", "#27AE60", "-", 3.0),
+        ("alternative", "#2980B9", "--", 2.5),
+        ("tail_risk", "#E74C3C", ":", 2.0),
+    ]
+
+    # Marker positions for key levels
+    ep_entry = ep["entry"] if ep else None
+    ep_stop = ep["stop"] if ep else None
+    ep_t1 = ep.get("t1_price") if ep else None
+    ep_t2 = ep.get("t2_price") if ep else None
+
+    endpoint_positions = []  # Track for anti-overlap
+
+    for key, color, ls, lw in path_configs:
+        s = pb[key]
+        y_pts = np.array(s["waypoints"], dtype=float)
+
+        # For tail risk, handle the path that goes off-chart
+        is_tail = (key == "tail_risk")
+
+        cs = CubicSpline(x_4pts, y_pts, bc_type="clamped")
+        y_smooth_raw = cs(x_smooth)
+
+        if is_tail:
+            # Find where path exits visible range
+            exit_idx = len(x_smooth)
+            for i, y in enumerate(y_smooth_raw):
+                if y < y_lo - 0.05 or y > y_hi + 0.05:
+                    exit_idx = i
+                    break
+
+            if exit_idx > 3:
+                y_clipped = np.clip(y_smooth_raw[:exit_idx], y_lo, y_hi)
+                # Primary path glow effect (not for tail)
+                ax.plot(x_smooth[:exit_idx], y_clipped,
+                        color=color, linestyle=ls, linewidth=lw, zorder=3,
+                        alpha=0.9)
+
+            # Downward arrow at exit point
+            arrow_x = float(x_smooth[min(exit_idx, len(x_smooth) - 1)])
+            arrow_y = y_lo + 0.12
+            tail_bottom = min(y_pts[2], y_pts[3])
+            tail_label = (f"\u2193 {s['name']}\n({s['probability']}%)"
+                          f" \u2192 {tail_bottom:.0f}-{tail_bottom + 2:.0f}")
+            ax.annotate(tail_label, xy=(arrow_x, arrow_y),
+                        fontsize=8, color="white", fontweight="bold",
+                        va="bottom", ha="center",
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="#E74C3C",
+                                  edgecolor="#C0392B", alpha=0.9),
+                        zorder=5)
+
+        else:
+            y_clipped = np.clip(y_smooth_raw, y_lo - 0.05, y_hi + 0.05)
+
+            # Primary path gets a subtle glow
+            if key == "primary":
+                ax.plot(x_smooth, y_clipped, color=color, linestyle=ls,
+                        linewidth=lw + 3, alpha=0.12, zorder=2)
+
+            ax.plot(x_smooth, y_clipped, color=color, linestyle=ls,
+                    linewidth=lw, zorder=3, alpha=0.95)
+
+            # Arrow at endpoint
+            dx = x_smooth[-1] - x_smooth[-3]
+            dy = y_clipped[-1] - y_clipped[-3]
+            ax.annotate("", xy=(x_smooth[-1], y_clipped[-1]),
+                        xytext=(x_smooth[-1] - dx * 0.15,
+                                y_clipped[-1] - dy * 0.15),
+                        arrowprops=dict(arrowstyle="-|>", color=color,
+                                        lw=lw * 0.7, mutation_scale=12),
+                        zorder=4)
+
+            # ── Key level markers on path (one per level type) ─────────
+            placed_markers = set()
+            for wp_i, wp_y in enumerate(y_pts):
+                if wp_i == 0:
+                    continue  # Skip starting point
+                wx = x_4pts[wp_i]
+                wy = float(np.clip(wp_y, y_lo, y_hi))
+                marker_label = None
+                marker_shape = None
+
+                if ep_entry and abs(wp_y - ep_entry) < 0.08 and "Entry" not in placed_markers:
+                    marker_shape = "o"
+                    marker_label = "Entry"
+                elif ep_t1 and abs(wp_y - ep_t1) < 0.08 and "T1" not in placed_markers:
+                    marker_shape = "D"
+                    marker_label = "T1"
+                elif ep_t2 and abs(wp_y - ep_t2) < 0.08 and "T2" not in placed_markers:
+                    marker_shape = "D"
+                    marker_label = "T2"
+                elif ep_stop and abs(wp_y - ep_stop) < 0.08 and "Stop" not in placed_markers:
+                    marker_shape = "X"
+                    marker_label = "Stop"
+                elif key == "alternative" and "Sweep" not in placed_markers:
+                    for liq in results.get("liquidity_map", [])[:10]:
+                        if liq["type"] in ("EQH", "EQL") and abs(wp_y - liq["price"]) < 0.08:
+                            marker_shape = "s"
+                            marker_label = "Sweep"
+                            break
+
+                if marker_shape and marker_label:
+                    placed_markers.add(marker_label)
+                    ax.plot(wx, wy, marker_shape, color=color, markersize=9,
+                            zorder=5, markeredgecolor="white", markeredgewidth=1.2)
+                    ax.annotate(marker_label, xy=(wx, wy),
+                                xytext=(wx + 0.15, wy + 0.06),
+                                fontsize=8, color=color, fontweight="bold",
+                                zorder=5)
+
+            # ── Probability label box at endpoint ───────────────────────
+            y_end = float(np.clip(y_pts[-1], y_lo + 0.10, y_hi - 0.10))
+            # Anti-overlap: offset if too close to another endpoint
+            for prev_y in endpoint_positions:
+                if abs(y_end - prev_y) < 0.12:
+                    y_end += 0.14 if y_end >= prev_y else -0.14
+            endpoint_positions.append(y_end)
+
+            label_text = f"{s['name']} ({s['probability']}%)"
+            ax.annotate(label_text,
+                        xy=(S_END + 0.08, y_end),
+                        fontsize=8, color="white", fontweight="bold",
+                        va="center", ha="left",
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor=color,
+                                  edgecolor=color, alpha=0.9),
+                        zorder=5)
+
+    # ── NOW label on left ───────────────────────────────────────────────
+    ax.text(-0.35, price, f"NOW\n{price:.2f}", fontsize=8, color="#2D3436",
+            fontweight="bold", ha="right", va="center", zorder=5)
+
+    # ── Legend (bottom-left) ────────────────────────────────────────────
+    legend_y = y_lo + 0.08
+    legend_x = 0.15
+    legend_items = [
+        ("\u2501\u2501", "#27AE60", "Primary: Enter at zone"),
+        ("\u254C\u254C", "#2980B9", "Alt: Wait for sweep"),
+        ("\u00B7\u00B7\u00B7\u00B7", "#E74C3C", "Tail: Stay flat"),
+    ]
+    for i, (sym, col, desc) in enumerate(legend_items):
+        ly = legend_y + i * 0.10
+        ax.text(legend_x, ly, f"{sym} {desc}", fontsize=7, color=col,
+                fontweight="bold", va="center", zorder=5,
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1))
+
+    # ── Axis styling ────────────────────────────────────────────────────
     ax.set_ylim(y_lo, y_hi)
-    ax.set_xlim(-0.25, 3.7)
-    ax.set_xticks([0, 1, 2, 3])
-    ax.set_xticklabels(["Now", "", "", ""])
+    ax.set_xlim(-0.5, S_END + 1.2)
+    ax.set_xticks([])
 
-    ax.set_title("Next 24h Scenario Paths — USD/JPY", fontsize=11, fontweight="bold",
-                 pad=18, color="#2D3436")
-    ax.set_ylabel("Price", fontsize=9)
-
+    # Y-axis on right side
+    ax.yaxis.tick_right()
+    ax.yaxis.set_label_position("right")
     ax.yaxis.set_major_formatter(plt.FormatStrFormatter("%.2f"))
-    ax.tick_params(axis="y", labelsize=8)
-    ax.tick_params(axis="x", labelsize=8)
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(0.50))
+    ax.yaxis.set_minor_locator(mticker.MultipleLocator(0.25))
+    ax.tick_params(axis="y", labelsize=8, which="both", right=True, left=False)
 
-    fig.tight_layout(rect=[0.06, 0.02, 0.82, 0.94])
+    # Remove top/left/bottom spines
+    ax.spines["top"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
+
+    fig.tight_layout(rect=[0.05, 0.02, 0.82, 0.92])
 
     today = dt.date.today().strftime("%Y-%m-%d")
     output_dir = os.path.join(PROJECT_ROOT, "output", "daily")

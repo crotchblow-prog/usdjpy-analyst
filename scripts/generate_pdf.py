@@ -1100,7 +1100,7 @@ def parse_playbook_data(md_text):
     pb = {}
 
     # Check if section exists
-    if "### Next 24h Playbook" not in md_text:
+    if "### Next 12h Playbook" not in md_text:
         return pb
 
     # Extract generated_at
@@ -1125,7 +1125,7 @@ def parse_playbook_data(md_text):
 
         sessions = {}
         for sess in ["Tokyo", "London", "New York"]:
-            sm = re.search(rf"\*\*{sess}:\*\*\s*(.+?)$", section_text, re.MULTILINE)
+            sm = re.search(rf"\*\*{re.escape(sess)}:\*\*\s*(.+?)$", section_text, re.MULTILINE)
             if sm:
                 sessions[sess] = sm.group(1).strip()
 
@@ -1570,8 +1570,7 @@ def make_playbook_boxes(pb):
 
         # Body: sessions + action, compact
         body_lines = []
-        for sess_name in ["Tokyo", "London", "New York"]:
-            sess_text = s.get("sessions", {}).get(sess_name, "")
+        for sess_name, sess_text in s.get("sessions", {}).items():
             if sess_text:
                 body_lines.append(f"<b>{sess_name}:</b> {escape_xml(sess_text)}")
         body_lines.append(f"<b>\u2192 Action:</b> {escape_xml(s.get('action', ''))}")
@@ -1721,14 +1720,14 @@ def build_smc_pdf(md_text, base_dir, meta):
         flowables.append(Paragraph(detail_text, small_s))
 
     # ═══════════════════════════════════════════════════════════════════════
-    # PAGE 2 — NEXT 24h PLAYBOOK + MTF + LIQUIDITY
+    # PAGE 2 — NEXT 12h PLAYBOOK + MTF + LIQUIDITY
     # ═══════════════════════════════════════════════════════════════════════
     flowables.append(PageBreak())
 
     # Playbook section
     pb = sd.get("playbook", {})
     if pb:
-        flowables.append(make_smc_section("Next 24h Playbook", S_TARGET))
+        flowables.append(make_smc_section("Next 12h Playbook", S_TARGET))
         flowables.append(Spacer(1, 2 * mm))
 
         gen_text = pb.get("generated_at", "")

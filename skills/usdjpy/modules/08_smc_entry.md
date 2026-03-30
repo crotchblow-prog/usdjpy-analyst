@@ -17,14 +17,14 @@ Translate the directional bias from Modules 01-07 into precise entry zones, stop
   - Setup C: Liquidity Sweep
   - Setup D: Tokyo Fix Fade
 
-- **Scenario** = playbook projections (what might happen next 24h)
+- **Scenario** = playbook projections (what might happen next 12h)
   - Primary: highest probability path aligned with bias
   - Alternative: second path, different entry mechanism
   - Tail Risk: low probability, high impact event
 
 These terms must never be mixed in report output, chart titles, or section headers.
 "Setup" appears in the "Setup Classification" section and chart title.
-"Scenario" appears only in the "Next 24h Playbook" section.
+"Scenario" appears only in the "Next 12h Playbook" section.
 
 ## Prerequisites
 - Module 07 checklist must have been run and a directional bias established
