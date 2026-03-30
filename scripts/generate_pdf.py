@@ -944,10 +944,16 @@ def parse_smc_data(md_text):
     for m in re.finditer(r"\|\s*(4H|1H|15M|5M)\s*\|\s*(\w+)\s*\|", md_text):
         d["mtf"].append((m.group(1), m.group(2)))
 
-    # Scenario
-    m = re.search(r"\*\*Scenario (\w):\*\*\s*(.+?)$", md_text, re.MULTILINE)
-    d["scenario_id"] = m.group(1) if m else ""
-    d["scenario_name"] = m.group(2).strip() if m else ""
+    # Setup classification (formerly "Scenario identification")
+    m = re.search(r"\*\*Setup Type:\*\*\s*(.+?)$", md_text, re.MULTILINE)
+    if not m:
+        # Fallback for older reports
+        m = re.search(r"\*\*Scenario (\w):\*\*\s*(.+?)$", md_text, re.MULTILINE)
+        d["scenario_id"] = m.group(1) if m else ""
+        d["scenario_name"] = m.group(2).strip() if m else ""
+    else:
+        d["scenario_id"] = ""
+        d["scenario_name"] = m.group(1).strip()
     m = re.search(r"\*\*Rationale:\*\*\s*(.+?)$", md_text, re.MULTILINE)
     d["scenario_rationale"] = m.group(1).strip() if m else ""
     m = re.search(r"\*\*Bias Alignment:\*\*\s*(.+?)$", md_text, re.MULTILINE)
@@ -1782,12 +1788,12 @@ def build_smc_pdf(md_text, base_dir, meta):
     flowables.append(make_compact_box("4H Structure", struct_line, S_TARGET))
     flowables.append(Spacer(1, 4 * mm))
 
-    # Scenario + Risk + Session — stacked compact boxes with colored borders
+    # Setup classification + Risk + Session — stacked compact boxes
     scen_text = escape_xml(sd.get("scenario_rationale", ""))
     if sd.get("bias_alignment"):
         scen_text += f"<br/>Bias Alignment: {escape_xml(sd['bias_alignment'])}"
     flowables.append(make_compact_box(
-        f"Scenario {sd.get('scenario_id', '')}: {sd.get('scenario_name', '')}",
+        f"Setup: {sd.get('scenario_name', '')}",
         scen_text, S_TARGET))
     flowables.append(Spacer(1, 2 * mm))
 

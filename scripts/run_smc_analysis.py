@@ -923,11 +923,11 @@ def _section_4h_structure(r):
 
 
 def _section_scenario(r):
-    """Scenario identification."""
+    """Setup classification."""
     s = r["scenario"]
-    return f"""### Scenario Identification
+    return f"""### Setup Classification
 
-**Scenario {s['scenario']}:** {s['name']}
+**Setup Type:** {s['name']}
 **Rationale:** {s['description']}
 **Bias Alignment:** {'Yes' if s.get('bias_alignment') else 'No — reduced probability'}
 
@@ -1370,7 +1370,7 @@ def generate_chart(results):
     # Clean formatting
     ax.set_title(
         f"USD/JPY 1H  |  {results['analysis_1h']['structure']}  |  "
-        f"Scenario {results['scenario']['scenario']}: {results['scenario']['name']}",
+        f"Setup: {results['scenario']['name']}",
         fontsize=10, fontweight="bold", color="#2D3436", pad=10
     )
     ax.set_ylabel("")
