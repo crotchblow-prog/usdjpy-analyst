@@ -9,6 +9,23 @@ Translate the directional bias from Modules 01-07 into precise entry zones, stop
 **Orchestrator:** `./scripts/run_smc_analysis.py` — multi-TF analysis + report + chart
 **Commands:** `/usdjpy-entry` (full), `/usdjpy-levels` (quick zones), `/usdjpy-fix` (Tokyo fix fade)
 
+## Terminology
+
+- **Setup** = market condition classification (what type of structure exists)
+  - Setup A: Intervention Bounce
+  - Setup B: Trend Retracement
+  - Setup C: Liquidity Sweep
+  - Setup D: Tokyo Fix Fade
+
+- **Scenario** = playbook projections (what might happen next 24h)
+  - Primary: highest probability path aligned with bias
+  - Alternative: second path, different entry mechanism
+  - Tail Risk: low probability, high impact event
+
+These terms must never be mixed in report output, chart titles, or section headers.
+"Setup" appears in the "Setup Classification" section and chart title.
+"Scenario" appears only in the "Next 24h Playbook" section.
+
 ## Prerequisites
 - Module 07 checklist must have been run and a directional bias established
 - If Module 07 bias is NEUTRAL with LOW conviction, this module should warn the user that SMC entries without a macro bias are lower probability
