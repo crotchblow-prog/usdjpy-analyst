@@ -1,0 +1,101 @@
+# Copy to config.yaml and replace API keys
+# ==========================================
+
+fred:
+  api_key: "YOUR_FRED_API_KEY_HERE"
+  base_url: "https://api.stlouisfed.org/fred/series/observations"
+  series:
+    us_10y: "DGS10"
+    us_2y: "DGS2"
+    jp_10y: "IRLTLT01JPM156N"        # fallback only — primary JP yields from MOF CSV
+    usdjpy: "DEXJPUS"
+    fed_funds: "FEDFUNDS"
+    sp500: "SP500"
+    vix: "VIXCLS"
+    wti_oil: "DCOILWTICO"
+    gold: "GOLDAMGBD228NLBM"
+
+# MOF Japan JGB yields (primary source for JP 2Y, 10Y, 30Y)
+mof:
+  historical_url: "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/historical/jgbcme_all.csv"
+  current_url: "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv"
+  columns:
+    jp_2y: 2       # column index in CSV
+    jp_10y: 10
+    jp_30y: 14
+
+# Yahoo Finance tickers (for data not available on FRED)
+yahoo:
+  nikkei: "^N225"
+  usdjpy_intraday: "USDJPY=X"
+  dxy: "DX-Y.NYB"
+
+# CFTC COT data
+cftc:
+  # Weekly release URL pattern — updated each Friday
+  # Japanese Yen futures: contract code 097741
+  base_url: "https://www.cftc.gov/dea/newcot"
+  contract_code: "097741"
+
+# Technical analysis parameters
+technicals:
+  sma_periods: [50, 200]
+  rsi_period: 14
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+  ichimoku:
+    tenkan: 9
+    kijun: 26
+    senkou_b: 52
+
+# Signal thresholds
+thresholds:
+  spread_widening_alert: 0.15        # percentage points change per month to flag as widening/narrowing
+  cot_crowding_percentile: 85        # flag when net positioning exceeds this percentile (vs 3yr history)
+  correlation_breakdown: 0.3         # flag when rolling 30d correlation drops below this
+  intervention_risk_level: 150       # USD/JPY level above which BOJ intervention risk is elevated
+  intervention_critical_level: 160   # USD/JPY level above which BOJ intervention risk is CRITICAL
+  intervention_rate_of_change: 5.0   # yen move in 30 days that increases intervention risk
+  energy_risk_threshold: 10          # WTI oil monthly % change to flag ENERGY RISK HIGH
+  energy_risk_critical: 20           # WTI oil monthly % change to flag ENERGY RISK CRITICAL
+
+# Cross-asset correlation settings
+correlations:
+  window: 30                         # rolling correlation window in trading days
+  assets:                            # assets to correlate with USD/JPY
+    - "SP500"
+    - "NIKKEI"
+    - "GOLD"
+    - "VIX"
+    - "WTI"
+
+# Seasonality reference
+seasonality:
+  japan_fiscal_year_end: "03-31"
+  repatriation_months: [2, 3]        # Feb-Mar: JPY strength tendency
+  boj_meeting_months: [1, 3, 4, 6, 7, 9, 10, 12]  # typical BOJ meeting months
+
+# Output settings
+output:
+  timezone: "Asia/Tokyo"
+  chart_style: "seaborn-v0_8"
+  chart_dpi: 150
+  chart_figsize: [12, 6]
+
+# Email delivery
+email:
+  enabled: true
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  from_address: "your_email@gmail.com"
+  to_address: "your_email@gmail.com"
+  # Password stored in environment variable USDJPY_EMAIL_PASSWORD
+  # For Gmail, use an App Password: https://myaccount.google.com/apppasswords
+
+# Schedule
+schedule:
+  daily_run_time: "10:00"              # 10:00 AM JST (after Tokyo fix at 9:55)
+  weekly_run_day: "Friday"
+  timezone: "Asia/Tokyo"

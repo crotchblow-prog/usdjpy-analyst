@@ -1,0 +1,208 @@
+name: USD/JPY Reports
+
+on:
+  schedule:
+    # 08:30 JST = 23:30 UTC previous day (Mon-Fri → Sun-Thu UTC)
+    - cron: '30 23 * * 0-4'
+    # 16:30 JST = 07:30 UTC same day (Mon-Fri)
+    - cron: '30 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      report_type:
+        description: 'Which reports to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - daily
+          - weekly
+          - smc
+
+env:
+  TZ: Asia/Tokyo
+
+jobs:
+  generate-reports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create config from secrets
+        run: |
+          cp config.yaml.example config.yaml
+          sed -i "s/YOUR_FRED_API_KEY_HERE/${{ secrets.FRED_API_KEY }}/" config.yaml
+          sed -i "s/your_email@gmail.com/${{ secrets.GMAIL_ADDRESS }}/g" config.yaml
+
+      - name: Create data directories
+        run: mkdir -p data/raw output/daily output/weekly logs
+
+      - name: Determine run type
+        id: run-type
+        run: |
+          JST_DATE=$(date +%Y-%m-%d)
+          JST_DOW=$(date +%u)  # 1=Mon ... 7=Sun
+          echo "date=$JST_DATE" >> $GITHUB_OUTPUT
+
+          # Manual trigger
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TYPE="${{ github.event.inputs.report_type }}"
+            echo "type=$TYPE" >> $GITHUB_OUTPUT
+            if [ "$TYPE" = "all" ] || [ "$TYPE" = "weekly" ]; then
+              echo "weekly=true" >> $GITHUB_OUTPUT
+            else
+              echo "weekly=false" >> $GITHUB_OUTPUT
+            fi
+            if [ "$TYPE" = "all" ] || [ "$TYPE" = "daily" ]; then
+              echo "daily=true" >> $GITHUB_OUTPUT
+            else
+              echo "daily=false" >> $GITHUB_OUTPUT
+            fi
+            if [ "$TYPE" = "all" ] || [ "$TYPE" = "smc" ] || [ "$TYPE" = "daily" ]; then
+              echo "smc=true" >> $GITHUB_OUTPUT
+            else
+              echo "smc=false" >> $GITHUB_OUTPUT
+            fi
+            exit 0
+          fi
+
+          # Scheduled trigger — check UTC hour to determine morning vs afternoon
+          HOUR_UTC=$(date -u +%H)
+          if [ "$HOUR_UTC" -ge 20 ]; then
+            # 23:30 UTC = 08:30 JST morning run
+            echo "type=morning" >> $GITHUB_OUTPUT
+            echo "daily=true" >> $GITHUB_OUTPUT
+            echo "smc=true" >> $GITHUB_OUTPUT
+            # Monday JST = check JST day-of-week
+            if [ "$JST_DOW" -eq 1 ]; then
+              echo "weekly=true" >> $GITHUB_OUTPUT
+            else
+              echo "weekly=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            # 07:30 UTC = 16:30 JST afternoon run (SMC only)
+            echo "type=afternoon" >> $GITHUB_OUTPUT
+            echo "daily=false" >> $GITHUB_OUTPUT
+            echo "weekly=false" >> $GITHUB_OUTPUT
+            echo "smc=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Daily Report
+        if: steps.run-type.outputs.daily == 'true'
+        id: daily
+        continue-on-error: true
+        run: |
+          python run_daily_analysis.py
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Generate Daily PDF
+        if: steps.run-type.outputs.daily == 'true' && steps.daily.outcome == 'success'
+        continue-on-error: true
+        run: |
+          REPORT="output/daily/${{ steps.run-type.outputs.date }}.md"
+          if [ -f "$REPORT" ]; then
+            python scripts/generate_pdf.py "$REPORT"
+          fi
+
+      - name: Run Weekly Report
+        if: steps.run-type.outputs.weekly == 'true'
+        id: weekly
+        continue-on-error: true
+        run: |
+          python run_daily_analysis.py --weekly
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Generate Weekly PDF
+        if: steps.run-type.outputs.weekly == 'true' && steps.weekly.outcome == 'success'
+        continue-on-error: true
+        run: |
+          REPORT="output/weekly/${{ steps.run-type.outputs.date }}.md"
+          if [ -f "$REPORT" ]; then
+            python scripts/generate_pdf.py "$REPORT"
+          fi
+
+      - name: Run SMC Report
+        if: steps.run-type.outputs.smc == 'true'
+        id: smc
+        continue-on-error: true
+        run: |
+          python scripts/run_smc_analysis.py --mode full
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Send Daily Email
+        if: steps.run-type.outputs.daily == 'true' && steps.daily.outcome == 'success'
+        continue-on-error: true
+        env:
+          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          DATE="${{ steps.run-type.outputs.date }}"
+          REPORT="output/daily/${DATE}.md"
+          if [ -f "$REPORT" ]; then
+            CHARTS=$(ls output/daily/*${DATE}*.png 2>/dev/null || true)
+            python send_report.py "$REPORT" $CHARTS
+          fi
+
+      - name: Send Weekly Email
+        if: steps.run-type.outputs.weekly == 'true' && steps.weekly.outcome == 'success'
+        continue-on-error: true
+        env:
+          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          DATE="${{ steps.run-type.outputs.date }}"
+          REPORT="output/weekly/${DATE}.md"
+          if [ -f "$REPORT" ]; then
+            CHARTS=$(ls output/weekly/*${DATE}*.png 2>/dev/null || true)
+            python send_report.py "$REPORT" $CHARTS
+          fi
+
+      - name: Send SMC Email
+        if: steps.run-type.outputs.smc == 'true' && steps.smc.outcome == 'success'
+        continue-on-error: true
+        env:
+          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          DATE="${{ steps.run-type.outputs.date }}"
+          REPORT="output/daily/smc_${DATE}.md"
+          if [ -f "$REPORT" ]; then
+            CHARTS=$(ls output/daily/smc_entry_${DATE}*.png 2>/dev/null || true)
+            python send_report.py "$REPORT" $CHARTS
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## USD/JPY Report Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Report | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Date (JST) | ${{ steps.run-type.outputs.date }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run type | ${{ steps.run-type.outputs.type }} |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.run-type.outputs.daily }}" = "true" ]; then
+            echo "| Daily | ${{ steps.daily.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ steps.run-type.outputs.weekly }}" = "true" ]; then
+            echo "| Weekly | ${{ steps.weekly.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ steps.run-type.outputs.smc }}" = "true" ]; then
+            echo "| SMC | ${{ steps.smc.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Generated files:" >> $GITHUB_STEP_SUMMARY
+          find output -name "*.md" -o -name "*.pdf" -o -name "*.png" 2>/dev/null | sort >> $GITHUB_STEP_SUMMARY
+
+      - name: Archive reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ steps.run-type.outputs.date }}-${{ github.run_id }}
+          path: output/
+          retention-days: 30
+          if-no-files-found: ignore
