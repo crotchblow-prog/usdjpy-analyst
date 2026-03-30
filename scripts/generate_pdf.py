@@ -1074,11 +1074,86 @@ def parse_smc_data(md_text):
                     "sig": m.group(3).strip(),
                 })
 
-    # Chart path
-    m = re.search(r"!\[.*?\]\((.+?)\)", md_text)
+    # Chart path — match the entry chart specifically (not playbook)
+    m = re.search(r"!\[SMC Entry Chart\]\((.+?)\)", md_text)
+    if not m:
+        # Fallback: match any smc_entry_* image
+        m = re.search(r"!\[.*?\]\((smc_entry_[^)]+)\)", md_text)
     d["chart_filename"] = m.group(1) if m else None
 
+    # Playbook
+    d["playbook"] = parse_playbook_data(md_text)
+    m_pb = re.search(r"!\[Playbook\]\((.+?)\)", md_text)
+    d["playbook_chart_filename"] = m_pb.group(1) if m_pb else None
+
     return d
+
+
+def parse_playbook_data(md_text):
+    """Extract playbook scenarios from markdown."""
+    pb = {}
+
+    # Check if section exists
+    if "### Next 24h Playbook" not in md_text:
+        return pb
+
+    # Extract generated_at
+    m = re.search(r"> Generated at (.+?) —", md_text)
+    pb["generated_at"] = m.group(1).strip() if m else ""
+
+    # Extract each scenario
+    for label, key in [("Primary", "primary"), ("Alternative", "alternative"),
+                        ("Tail Risk", "tail_risk")]:
+        pattern = rf"#### {label}: (.+?) \((\d+)%\)"
+        m = re.search(pattern, md_text)
+        if not m:
+            continue
+        name = m.group(1)
+        prob = m.group(2)
+
+        # Find session lines and metadata between this header and the next #### or ###
+        header_pos = m.end()
+        next_section = re.search(r"\n(?:####|###) ", md_text[header_pos:])
+        section_end = header_pos + next_section.start() if next_section else len(md_text)
+        section_text = md_text[header_pos:section_end]
+
+        sessions = {}
+        for sess in ["Tokyo", "London", "New York"]:
+            sm = re.search(rf"\*\*{sess}:\*\*\s*(.+?)$", section_text, re.MULTILINE)
+            if sm:
+                sessions[sess] = sm.group(1).strip()
+
+        action = ""
+        am = re.search(r"\*\*Action:\*\*\s*(.+?)$", section_text, re.MULTILINE)
+        if am:
+            action = am.group(1).strip()
+
+        key_level = ""
+        km = re.search(r"\*\*Key Level:\*\*\s*(.+?)(?:\s*\||\s*$)", section_text, re.MULTILINE)
+        if km:
+            key_level = km.group(1).strip()
+
+        trigger = ""
+        tm = re.search(r"\*\*Trigger:\*\*\s*(.+?)$", section_text, re.MULTILINE)
+        if tm:
+            trigger = tm.group(1).strip()
+
+        invalidation = ""
+        im = re.search(r"\*\*Invalidation:\*\*\s*(.+?)$", section_text, re.MULTILINE)
+        if im:
+            invalidation = im.group(1).strip()
+
+        pb[key] = {
+            "name": name,
+            "probability": prob,
+            "sessions": sessions,
+            "action": action,
+            "key_level": key_level,
+            "trigger": trigger,
+            "invalidation": invalidation,
+        }
+
+    return pb
 
 
 def detect_contradictions(sd):
@@ -1459,6 +1534,76 @@ def make_compact_box(title, content_text, border_color):
     return inner
 
 
+def make_playbook_boxes(pb):
+    """Render 3 color-coded scenario boxes for the PDF playbook section."""
+    if not pb:
+        return []
+
+    flowables = []
+    scenarios = [
+        ("primary", S_BULL, "Primary"),
+        ("alternative", S_TARGET, "Alternative"),
+        ("tail_risk", S_BEAR, "Tail Risk"),
+    ]
+
+    title_s = ParagraphStyle("pb_title", fontName="Helvetica-Bold", fontSize=10,
+                              leading=13, textColor=S_TEXT)
+    body_s = ParagraphStyle("pb_body", fontName="Helvetica", fontSize=9,
+                             leading=12, textColor=S_TEXT2)
+    prob_s = ParagraphStyle("pb_prob", fontName="Helvetica-Bold", fontSize=10,
+                             leading=13, textColor=S_TEXT2, alignment=TA_RIGHT)
+
+    for key, color, label in scenarios:
+        s = pb.get(key)
+        if not s:
+            continue
+
+        # Title row: name left, probability right
+        title_text = f"{label}: {escape_xml(s['name'])}"
+        prob_text = f"{s['probability']}%"
+
+        # Body: sessions + action, compact
+        body_lines = []
+        for sess_name in ["Tokyo", "London", "New York"]:
+            sess_text = s.get("sessions", {}).get(sess_name, "")
+            if sess_text:
+                body_lines.append(f"<b>{sess_name}:</b> {escape_xml(sess_text)}")
+        body_lines.append(f"<b>\u2192 Action:</b> {escape_xml(s.get('action', ''))}")
+        if s.get("invalidation") and s["invalidation"] != "N/A — event-driven":
+            body_lines.append(f"<b>\u2718 Invalidation:</b> {escape_xml(s['invalidation'])}")
+        content = "<br/>".join(body_lines)
+
+        # Build box with colored left border
+        header_row = Table(
+            [[Paragraph(title_text, title_s), Paragraph(prob_text, prob_s)]],
+            colWidths=[CONTENT_W - 60, 50]
+        )
+        header_row.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ]))
+
+        inner = Table([
+            [header_row],
+            [Paragraph(content, body_s)],
+        ], colWidths=[CONTENT_W])
+        inner.setStyle(TableStyle([
+            ("LINEBEFORE", (0, 0), (0, -1), 3, color),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (0, 0), 4),
+            ("TOPPADDING", (0, 1), (0, 1), 2),
+            ("BOTTOMPADDING", (0, -1), (-1, -1), 4),
+        ]))
+
+        flowables.append(inner)
+        flowables.append(Spacer(1, 2 * mm))
+
+    return flowables
+
+
 def make_zones_table(zones, current_price, direction):
     """Nearby/appendix zone table with color-coding and distance column."""
     hdr_s = ParagraphStyle("zth", fontName="Helvetica-Bold", fontSize=8,
@@ -1570,23 +1715,63 @@ def build_smc_pdf(md_text, base_dir, meta):
         flowables.append(Paragraph(detail_text, small_s))
 
     # ═══════════════════════════════════════════════════════════════════════
-    # PAGE 2 — CONTEXT & LEVELS
+    # PAGE 2 — NEXT 24h PLAYBOOK + MTF + LIQUIDITY
     # ═══════════════════════════════════════════════════════════════════════
     flowables.append(PageBreak())
+
+    # Playbook section
+    pb = sd.get("playbook", {})
+    if pb:
+        flowables.append(make_smc_section("Next 24h Playbook", S_TARGET))
+        flowables.append(Spacer(1, 2 * mm))
+
+        gen_text = pb.get("generated_at", "")
+        if gen_text:
+            ts_s = ParagraphStyle("pb_ts", fontName="Helvetica", fontSize=8,
+                                   leading=11, textColor=S_NEUTRAL)
+            flowables.append(Paragraph(f"Generated at {escape_xml(gen_text)}", ts_s))
+            flowables.append(Spacer(1, 2 * mm))
+
+        flowables.extend(make_playbook_boxes(pb))
+        flowables.append(Spacer(1, 2 * mm))
+
+    # Playbook chart
+    pb_chart = sd.get("playbook_chart_filename")
+    if pb_chart:
+        pb_chart_path = os.path.join(base_dir, pb_chart)
+        if os.path.exists(pb_chart_path):
+            ir = ImageReader(pb_chart_path)
+            iw, ih = ir.getSize()
+            aspect = ih / iw
+            dw = CONTENT_W
+            dh = dw * aspect
+            max_h = (PAGE_H - M_TOP - M_BOTTOM) * 0.30
+            if dh > max_h:
+                dh = max_h
+                dw = dh / aspect
+            img = Image(pb_chart_path, width=dw, height=dh)
+            img.hAlign = "CENTER"
+            flowables.append(img)
+            flowables.append(Spacer(1, 3 * mm))
 
     # MTF alignment strip
     if sd.get("mtf"):
         flowables.append(make_smc_section("MTF Alignment", S_TARGET))
         flowables.append(Spacer(1, 2 * mm))
         flowables.append(make_mtf_strip(sd["mtf"], sd["direction"]))
-        flowables.append(Spacer(1, 5 * mm))
+        flowables.append(Spacer(1, 3 * mm))
 
     # Key liquidity levels
     if sd.get("liquidity"):
         flowables.append(make_smc_section("Key Liquidity Levels", S_TARGET))
         flowables.append(Spacer(1, 2 * mm))
         flowables.append(make_liquidity_table(sd["liquidity"], price))
-        flowables.append(Spacer(1, 5 * mm))
+        flowables.append(Spacer(1, 3 * mm))
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PAGE 3 — CONTEXT & DETAILS
+    # ═══════════════════════════════════════════════════════════════════════
+    flowables.append(PageBreak())
 
     # 4H Structure — compact single-line box
     struct_line = (

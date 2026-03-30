@@ -470,6 +470,14 @@ def run_full_analysis():
         "df_daily": df_daily,
     }
 
+    # Generate playbook (uses results data, no new fetches)
+    print("\n  Generating 24h playbook...")
+    results["playbook"] = _generate_playbook(results)
+    p = results["playbook"]
+    print(f"  Scenarios: {p['primary']['name']} ({p['primary']['probability']}%) | "
+          f"{p['alternative']['name']} ({p['alternative']['probability']}%) | "
+          f"{p['tail_risk']['name']} ({p['tail_risk']['probability']}%)")
+
     return results
 
 
@@ -491,6 +499,319 @@ def _infer_direction_from_context(bias_info):
     return "LONG"  # default fallback
 
 
+# ── Playbook Generation ──────────────────────────────────────────────────
+
+def _nearest_intervention(price):
+    """Return the nearest intervention level within 5 yen, or None."""
+    if not INTERVENTION_LEVELS:
+        return None
+    nearest = min(INTERVENTION_LEVELS, key=lambda x: abs(x - price))
+    return nearest if abs(nearest - price) <= 5.0 else None
+
+
+def _remaining_sessions():
+    """Return list of remaining trading sessions based on current JST time."""
+    import zoneinfo
+    now = dt.datetime.now(zoneinfo.ZoneInfo("Asia/Tokyo"))
+    hour = now.hour
+    sessions = []
+    # Tokyo 09:00-15:00 JST
+    if hour < 15:
+        label = "Tokyo" if hour < 9 else "Tokyo (remaining)"
+        sessions.append(label)
+    # London 17:00-02:00 JST (next day)
+    if hour < 2 or hour < 17:
+        sessions.append("London")
+    # New York 22:00-07:00 JST (next day)
+    if hour < 7 or hour < 22:
+        sessions.append("New York")
+    # If all sessions passed (very early morning after NY close), show next cycle
+    if not sessions:
+        sessions = ["Tokyo", "London", "New York"]
+    return sessions
+
+
+def _generate_playbook(results):
+    """
+    Generate 3 forward-looking scenarios from existing analysis results.
+    Returns dict with primary, alternative, tail_risk scenarios and waypoints.
+    """
+    price = results["current_price"]
+    direction = results["direction"]
+    confidence = results["confidence"]
+    ep = results["entry_plan"]
+    ez = results["entry_zone"]
+    bias = results["bias"]
+    pd_details = results["pd_details"]
+    pd_zone = results["pd_zone"]
+    liq_map = results["liquidity_map"]
+    scenario_info = results["scenario"]
+
+    sign = 1.0 if direction == "LONG" else -1.0
+
+    # ── Compute probabilities ────────────────────────────────────────────
+    p_primary = 0.45
+    p_alt = 0.35
+    p_tail = 0.20
+
+    # Confidence adjustment
+    if confidence == "HIGH":
+        p_primary += 0.10; p_alt -= 0.05; p_tail -= 0.05
+    elif confidence == "LOW":
+        p_primary -= 0.10; p_alt += 0.05; p_tail += 0.05
+
+    # MTF alignment
+    structures = [
+        results["analysis_4h"]["structure"],
+        results["analysis_1h"]["structure"],
+        results["analysis_15m"]["structure"],
+    ]
+    target_struct = "BULLISH" if direction == "LONG" else "BEARISH"
+    aligned_count = sum(1 for s in structures if s == target_struct)
+    if aligned_count == 3:
+        p_primary += 0.05
+    elif aligned_count == 0:
+        p_primary -= 0.10; p_alt += 0.05; p_tail += 0.05
+
+    # Premium/discount alignment
+    if (direction == "LONG" and pd_zone == "DISCOUNT") or \
+       (direction == "SHORT" and pd_zone == "PREMIUM"):
+        p_primary += 0.05
+
+    # Risk alerts
+    n_alerts = len(bias.get("risk_alerts", []))
+    if n_alerts >= 2:
+        p_tail += 0.05; p_primary -= 0.05
+    if bias.get("intervention_risk"):
+        p_tail += 0.05; p_alt -= 0.05
+
+    # Clamp and normalize — primary must always be the highest (floor 35%)
+    p_primary = max(0.35, min(0.55, p_primary))
+    p_alt = max(0.10, min(0.40, p_alt))
+    p_tail = max(0.10, min(0.30, p_tail))
+    total = p_primary + p_alt + p_tail
+    p_primary = round(p_primary / total, 2)
+    p_alt = round(p_alt / total, 2)
+    p_tail = round(1.0 - p_primary - p_alt, 2)
+    # Ensure primary stays on top after normalization
+    if p_primary <= p_alt:
+        p_primary, p_alt = p_alt + 0.05, p_primary - 0.05
+    if p_primary <= p_tail:
+        p_primary, p_tail = p_tail + 0.05, p_primary - 0.05
+
+    # ── Gather key levels ────────────────────────────────────────────────
+    entry_price = ep["entry"] if ep else None
+    stop_price = ep["stop"] if ep else None
+    t1_price = ep["t1_price"] if ep else None
+    midpoint = pd_details.get("midpoint", price)
+    intv_level = _nearest_intervention(price)
+
+    # Nearest liquidity levels
+    eqh_levels = [l for l in liq_map if l["type"] in ("EQH", "PDH") and l["price"] > price]
+    eql_levels = [l for l in liq_map if l["type"] in ("EQL", "PDL") and l["price"] < price]
+    nearest_eqh = min(eqh_levels, key=lambda l: l["price"])["price"] if eqh_levels else price + 0.50
+    nearest_eql = max(eql_levels, key=lambda l: l["price"])["price"] if eql_levels else price - 0.50
+
+    # Zone description for references
+    zone_desc = ""
+    if ez:
+        zone_desc = f"{ez['zone_type']} at {ez['zone_bottom']:.2f}-{ez['zone_top']:.2f}"
+
+    # ── Session descriptions ─────────────────────────────────────────────
+    remaining = _remaining_sessions()
+
+    # ── Primary Scenario ─────────────────────────────────────────────────
+    if ep and ez:
+        if direction == "LONG":
+            primary_name = "Pullback to OB and Rally"
+            tokyo_p = (f"Price drifts lower from {price:.2f} toward "
+                       f"{ez['zone_bottom']:.2f}-{ez['zone_top']:.2f} {ez['zone_type']}.")
+            london_p = (f"If 15M confirms bullish at the zone, enter long "
+                        f"targeting {t1_price:.2f}. Key session for the move.")
+            ny_p = f"Continuation toward {t1_price:.2f} or profit-taking pullback."
+            trigger_p = f"15M bullish engulfing or ChoCH at {ez['zone_bottom']:.2f}-{ez['zone_top']:.2f}"
+            action_p = f"Enter long at {entry_price:.2f}, stop {stop_price:.2f}, target {t1_price:.2f}"
+            key_level_p = f"{entry_price:.2f}"
+            inval_p = f"Price breaks below {stop_price:.2f}"
+        else:
+            primary_name = "Rally to OB and Drop"
+            tokyo_p = (f"Price drifts higher from {price:.2f} toward "
+                       f"{ez['zone_bottom']:.2f}-{ez['zone_top']:.2f} {ez['zone_type']}.")
+            london_p = (f"If 15M confirms bearish at the zone, enter short "
+                        f"targeting {t1_price:.2f}. Key session for the move.")
+            ny_p = f"Continuation toward {t1_price:.2f} or short covering bounce."
+            trigger_p = f"15M bearish engulfing or ChoCH at {ez['zone_bottom']:.2f}-{ez['zone_top']:.2f}"
+            action_p = f"Enter short at {entry_price:.2f}, stop {stop_price:.2f}, target {t1_price:.2f}"
+            key_level_p = f"{entry_price:.2f}"
+            inval_p = f"Price breaks above {stop_price:.2f}"
+        # Waypoints: drift toward entry, then move toward target
+        total_move = (t1_price - price) if t1_price else sign * 0.50
+        wp_primary = [
+            price,
+            price + total_move * 0.15,
+            price + total_move * 0.65,
+            price + total_move * 0.95,
+        ]
+    else:
+        primary_name = "Range-Bound Near Current Level"
+        tokyo_p = f"Price oscillates near {price:.2f}, no clear directional trigger."
+        london_p = "No entry zone reached — watch for structure development."
+        ny_p = f"Likely remains within {price - 0.30:.2f}-{price + 0.30:.2f} range."
+        trigger_p = "New BOS or ChoCH on 15M"
+        action_p = "Wait — no setup. Re-evaluate after NY close."
+        key_level_p = f"{midpoint:.2f} (midpoint)"
+        inval_p = "N/A — no active trade"
+        wp_primary = [price, price - sign * 0.10, price + sign * 0.15, price + sign * 0.10]
+
+    primary = {
+        "name": primary_name,
+        "probability": int(round(p_primary * 100)),
+        "sessions": {"Tokyo": tokyo_p, "London": london_p, "New York": ny_p},
+        "key_level": key_level_p,
+        "trigger": trigger_p,
+        "action": action_p,
+        "entry_ref": zone_desc,
+        "invalidation": inval_p,
+        "waypoints": wp_primary,
+    }
+
+    # ── Alternative Scenario ─────────────────────────────────────────────
+    # Deeper entry via liquidity sweep or different path
+    if direction == "LONG":
+        sweep_target = nearest_eql
+        alt_name = f"Liquidity Sweep Below {sweep_target:.2f}"
+        tokyo_a = (f"Price drops through entry zone, sweeps {sweep_target:.2f} "
+                   f"sell-stop liquidity.")
+        london_a = ("If displacement candle after sweep, deeper entry with "
+                    "better R:R from lower zone.")
+        ny_a = f"Rally toward {nearest_eqh:.2f} from the deeper base."
+        trigger_a = f"Sweep of {sweep_target:.2f} + bullish displacement on 5M"
+        deeper_entry = sweep_target + 0.05
+        action_a = (f"Wait for sweep, enter at {deeper_entry:.2f}, "
+                    f"stop {sweep_target - 0.20:.2f}, target {nearest_eqh:.2f}")
+        key_level_a = f"{sweep_target:.2f}"
+        inval_a = f"Price holds below {sweep_target - 0.30:.2f} after sweep"
+        wp_alt = [
+            price,
+            sweep_target,
+            price + (nearest_eqh - price) * 0.4,
+            nearest_eqh * 0.98 + price * 0.02,
+        ]
+    else:
+        sweep_target = nearest_eqh
+        alt_name = f"Liquidity Sweep Above {sweep_target:.2f}"
+        tokyo_a = (f"Price rallies through entry zone, sweeps {sweep_target:.2f} "
+                   f"buy-stop liquidity.")
+        london_a = ("If displacement candle after sweep, deeper entry with "
+                    "better R:R from higher zone.")
+        ny_a = f"Drop toward {nearest_eql:.2f} from the higher base."
+        trigger_a = f"Sweep of {sweep_target:.2f} + bearish displacement on 5M"
+        deeper_entry = sweep_target - 0.05
+        action_a = (f"Wait for sweep, enter at {deeper_entry:.2f}, "
+                    f"stop {sweep_target + 0.20:.2f}, target {nearest_eql:.2f}")
+        key_level_a = f"{sweep_target:.2f}"
+        inval_a = f"Price holds above {sweep_target + 0.30:.2f} after sweep"
+        wp_alt = [
+            price,
+            sweep_target,
+            price + (nearest_eql - price) * 0.4,
+            nearest_eql * 0.98 + price * 0.02,
+        ]
+
+    alternative = {
+        "name": alt_name,
+        "probability": int(round(p_alt * 100)),
+        "sessions": {"Tokyo": tokyo_a, "London": london_a, "New York": ny_a},
+        "key_level": key_level_a,
+        "trigger": trigger_a,
+        "action": action_a,
+        "entry_ref": "",
+        "invalidation": inval_a,
+        "waypoints": wp_alt,
+    }
+
+    # ── Tail Risk Scenario ───────────────────────────────────────────────
+    if bias.get("intervention_risk") and intv_level:
+        tail_name = "BOJ Intervention"
+        tokyo_t = f"MOF verbal escalation or rate check near {intv_level:.0f}."
+        london_t = "Full intervention — USD/JPY drops 200-400 pips in minutes."
+        ny_t = "Choppy consolidation. Intervention OBs form at 155-156."
+        trigger_t = "MOF headline, Reuters/Bloomberg flash"
+        action_t = "Stay flat. Do not catch the falling knife. Wait 24h."
+        key_level_t = f"{intv_level:.2f} (intervention)"
+        inval_t = "N/A — event-driven"
+        wp_tail = [price, price + 0.15, price - 1.50, price - 2.50]
+    else:
+        tail_name = "Flash Move / Data Surprise"
+        tokyo_t = "Quiet session, no early warning."
+        london_t = "Unexpected data or headline triggers 100-150 pip spike."
+        ny_t = "Partial retracement but new structure established."
+        trigger_t = "Major data miss/beat or geopolitical headline"
+        action_t = "Flatten all positions. Wait for structure to rebuild."
+        key_level_t = f"{midpoint:.2f} (midpoint)"
+        inval_t = "N/A — event-driven"
+        wp_tail = [price, price + 0.10 * sign, price - 1.20 * sign, price - 1.50 * sign]
+
+    tail_risk = {
+        "name": tail_name,
+        "probability": int(round(p_tail * 100)),
+        "sessions": {"Tokyo": tokyo_t, "London": london_t, "New York": ny_t},
+        "key_level": key_level_t,
+        "trigger": trigger_t,
+        "action": action_t,
+        "entry_ref": "",
+        "invalidation": inval_t,
+        "waypoints": wp_tail,
+    }
+
+    import zoneinfo
+    now_jst = dt.datetime.now(zoneinfo.ZoneInfo("Asia/Tokyo"))
+
+    return {
+        "primary": primary,
+        "alternative": alternative,
+        "tail_risk": tail_risk,
+        "generated_at": now_jst.strftime("%H:%M JST"),
+        "remaining_sessions": remaining,
+        "current_price": price,
+    }
+
+
+def _section_playbook(r):
+    """Format the Next 24h Playbook as markdown."""
+    pb = r.get("playbook")
+    if not pb:
+        return ""
+
+    today = dt.date.today().strftime("%Y-%m-%d")
+    remaining = ", ".join(pb["remaining_sessions"])
+    lines = [
+        "### Next 24h Playbook",
+        "",
+        f"> Generated at {pb['generated_at']} — remaining sessions: {remaining}",
+        "",
+    ]
+
+    for label, key in [("Primary", "primary"), ("Alternative", "alternative"),
+                        ("Tail Risk", "tail_risk")]:
+        s = pb[key]
+        lines.append(f"#### {label}: {s['name']} ({s['probability']}%)")
+        for sess_name in ["Tokyo", "London", "New York"]:
+            sess_text = s["sessions"].get(sess_name, "")
+            if sess_text:
+                lines.append(f"- **{sess_name}:** {sess_text}")
+        lines.append(f"- **Key Level:** {s['key_level']} | **Trigger:** {s['trigger']}")
+        lines.append(f"- **Action:** {s['action']}")
+        lines.append(f"- **Invalidation:** {s['invalidation']}")
+        lines.append("")
+
+    lines.append(f"![Playbook](smc_playbook_{today}.png)")
+    lines.append("")
+    lines.append("---")
+
+    return "\n".join(lines)
+
+
 # ── Report Generation ─────────────────────────────────────────────────────
 
 def generate_report(results, mode="full"):
@@ -509,6 +830,7 @@ def generate_report(results, mode="full"):
         lines.append(_section_entry_zone(results))
         lines.append(_section_confirmation(results))
         lines.append(_section_entry_plan(results))
+        lines.append(_section_playbook(results))
         lines.append(_section_active_zones(results))
         lines.append(_section_liquidity_map(results))
         lines.append(_section_session_plan(results))
@@ -1074,6 +1396,167 @@ def generate_chart(results):
     return chart_path
 
 
+def generate_playbook_chart(results):
+    """Generate the playbook scenario path chart — 3 projected paths over sessions."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from scipy.interpolate import CubicSpline
+
+    pb = results.get("playbook")
+    if not pb:
+        return None
+
+    config = load_config()
+    dpi = config.get("output", {}).get("chart_dpi", 150)
+
+    plt.rcParams.update({
+        "figure.facecolor": "#F8F9FA",
+        "axes.facecolor": "#FFFFFF",
+        "axes.edgecolor": "#DFE6E9",
+        "axes.grid": True,
+        "grid.color": "#DFE6E9",
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.7,
+        "xtick.color": "#636E72",
+        "ytick.color": "#636E72",
+        "text.color": "#2D3436",
+        "font.family": "Helvetica",
+    })
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    price = pb["current_price"]
+
+    # X control points and smooth interpolation
+    x_pts = np.array([0.0, 1.0, 2.0, 3.0])
+    x_smooth = np.linspace(0, 3, 120)
+
+    # Session background shading
+    for i, (start, end, label) in enumerate([
+        (0, 1, "Tokyo"), (1, 2, "London"), (2, 3, "New York")
+    ]):
+        if i % 2 == 0:
+            ax.axvspan(start, end, alpha=0.03, color="#636E72")
+        ax.text((start + end) / 2, 1.01, label, transform=ax.get_xaxis_transform(),
+                ha="center", va="bottom", fontsize=9, color="#636E72", fontweight="bold")
+
+    # Session dividers
+    for x_div in [1.0, 2.0]:
+        ax.axvline(x_div, color="#DFE6E9", linestyle=":", linewidth=1, zorder=1)
+
+    # Current price reference
+    ax.axhline(price, color="#95A5A6", linewidth=0.8, linestyle="-", alpha=0.5, zorder=1)
+    ax.plot(0, price, "o", color="#95A5A6", markersize=6, zorder=4)
+
+    # Y-axis: crop to ±1.0 (100 pips) around price for primary/alt focus
+    y_lo = price - 1.0
+    y_hi = price + 1.0
+
+    # Plot primary and alternative paths (full curves)
+    for key, color, ls, lw in [
+        ("primary", "#27AE60", "-", 2.5),
+        ("alternative", "#2980B9", "--", 1.8),
+    ]:
+        s = pb[key]
+        y_pts = np.array(s["waypoints"], dtype=float)
+        cs = CubicSpline(x_pts, y_pts, bc_type="clamped")
+        y_smooth = cs(x_smooth)
+        y_smooth = np.clip(y_smooth, y_lo - 0.20, y_hi + 0.20)
+        ax.plot(x_smooth, y_smooth, color=color, linestyle=ls, linewidth=lw, zorder=3)
+
+        # Endpoint label
+        y_end = float(np.clip(y_pts[-1], y_lo, y_hi))
+        label_text = f"{s['name']}\n({s['probability']}%)"
+        ax.annotate(label_text, xy=(3.0, y_end), xytext=(3.08, y_end),
+                    fontsize=7, color=color, fontweight="bold",
+                    va="center", ha="left",
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.5))
+
+    # Tail risk: short stub then downward arrow at bottom of chart
+    tail = pb["tail_risk"]
+    tail_wp = np.array(tail["waypoints"], dtype=float)
+    # Draw only the initial portion that stays in view
+    cs_tail = CubicSpline(x_pts, tail_wp, bc_type="clamped")
+    y_tail_smooth = cs_tail(x_smooth)
+
+    # Find where path exits the visible range
+    exit_idx = len(x_smooth)
+    for i, y in enumerate(y_tail_smooth):
+        if y < y_lo - 0.05:
+            exit_idx = i
+            break
+
+    if exit_idx > 2:
+        ax.plot(x_smooth[:exit_idx], np.clip(y_tail_smooth[:exit_idx], y_lo, y_hi + 0.20),
+                color="#E74C3C", linestyle=":", linewidth=1.8, zorder=3)
+
+    # Downward arrow at the exit point (or bottom-right)
+    arrow_x = float(x_smooth[min(exit_idx, len(x_smooth) - 1)])
+    arrow_y = y_lo + 0.08
+    tail_target = min(tail_wp[-1], tail_wp[2])
+    tail_label = f"\u2193 {tail['name']}\n({tail['probability']}%) \u2192 {tail_target:.0f}-{tail_target + 2:.0f}"
+    ax.annotate(tail_label,
+                xy=(arrow_x, arrow_y), fontsize=7, color="#E74C3C",
+                fontweight="bold", va="bottom", ha="center",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                          edgecolor="#E74C3C", alpha=0.9))
+
+    # Entry / Stop / T1 reference lines
+    ep = results.get("entry_plan")
+    if ep:
+        ax.axhline(ep["entry"], color="#27AE60", linewidth=0.7, linestyle="--", alpha=0.6, zorder=1)
+        ax.text(-0.12, ep["entry"], f"Entry\n{ep['entry']:.2f}", fontsize=6,
+                color="#27AE60", ha="right", va="center", fontweight="bold")
+        ax.axhline(ep["stop"], color="#E74C3C", linewidth=0.7, linestyle="--", alpha=0.6, zorder=1)
+        ax.text(-0.12, ep["stop"], f"Stop\n{ep['stop']:.2f}", fontsize=6,
+                color="#E74C3C", ha="right", va="center", fontweight="bold")
+        if ep.get("t1_price") and ep["t1_price"] <= y_hi + 0.10:
+            ax.axhline(ep["t1_price"], color="#2980B9", linewidth=0.7, linestyle="--",
+                        alpha=0.6, zorder=1)
+            ax.text(-0.12, ep["t1_price"], f"T1\n{ep['t1_price']:.2f}", fontsize=6,
+                    color="#2980B9", ha="right", va="center", fontweight="bold")
+
+    # Intervention level (if within view)
+    intv = _nearest_intervention(price)
+    if intv and y_lo <= intv <= y_hi:
+        ax.axhline(intv, color="#F39C12", linewidth=0.8, linestyle=":", alpha=0.7, zorder=1)
+        ax.text(3.08, intv, f"INTV {intv:.0f}", fontsize=6,
+                color="#F39C12", ha="left", va="center")
+
+    # Liquidity levels (EQH/EQL within view)
+    for liq in results.get("liquidity_map", [])[:10]:
+        lp = liq["price"]
+        if liq["type"] in ("EQH", "EQL") and y_lo <= lp <= y_hi:
+            ax.axhline(lp, color="#B2BEC3", linewidth=0.5, linestyle=":", alpha=0.5, zorder=1)
+            ax.text(3.08, lp, f"{liq['type']} {lp:.2f}", fontsize=5,
+                    color="#B2BEC3", ha="left", va="center")
+
+    # Axis styling
+    ax.set_ylim(y_lo, y_hi)
+    ax.set_xlim(-0.25, 3.7)
+    ax.set_xticks([0, 1, 2, 3])
+    ax.set_xticklabels(["Now", "", "", ""])
+
+    ax.set_title("Next 24h Scenario Paths — USD/JPY", fontsize=11, fontweight="bold",
+                 pad=18, color="#2D3436")
+    ax.set_ylabel("Price", fontsize=9)
+
+    ax.yaxis.set_major_formatter(plt.FormatStrFormatter("%.2f"))
+    ax.tick_params(axis="y", labelsize=8)
+    ax.tick_params(axis="x", labelsize=8)
+
+    fig.tight_layout(rect=[0.06, 0.02, 0.82, 0.94])
+
+    today = dt.date.today().strftime("%Y-%m-%d")
+    output_dir = os.path.join(PROJECT_ROOT, "output", "daily")
+    os.makedirs(output_dir, exist_ok=True)
+    chart_path = os.path.join(output_dir, f"smc_playbook_{today}.png")
+    fig.savefig(chart_path, dpi=dpi, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"  Playbook chart saved: {chart_path}")
+    return chart_path
+
+
 # ── Save Report ───────────────────────────────────────────────────────────
 
 def save_report(report_md, mode="full"):
@@ -1117,6 +1600,9 @@ def main():
     if args.mode == "full":
         print("\nGenerating chart...")
         chart_path = generate_chart(results)
+
+        print("Generating playbook chart...")
+        playbook_chart_path = generate_playbook_chart(results)
 
         # Generate PDF
         if report_path:
