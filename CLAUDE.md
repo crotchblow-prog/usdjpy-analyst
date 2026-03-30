@@ -96,12 +96,41 @@ Quick Scenario D check — Tokyo Fix Fade. Best run at 09:50-10:00 JST.
 Run: `python3 scripts/run_smc_analysis.py --mode fix`
 Output: `./output/daily/smc_fix_YYYY-MM-DD.md`
 
-### /usdjpy-journal
-Create a new trade journal entry. Prompt the user for:
-- Direction (long/short/flat)
-- Rationale (free text)
-- Key levels (entry, stop, target)
-Then auto-append today's checklist signals and save to `./output/journal/YYYY-MM-DD.md`.
+### /usdjpy-journal import
+Import trades from Exness CSV export files in `./data/trades/`.
+- Parses Exness MT5 CSV format (auto-detects delimiter and column names)
+- Filters for USDJPY trades only
+- Auto-matches with Module 07 bias and Module 08 SMC data from the trade date
+- Skips duplicate ticket numbers
+- Appends to `./output/journal/trade_log.csv`
+- Creates individual markdown entries in `./output/journal/`
+
+Run: `python3 scripts/journal.py import`
+
+CSV Drop Workflow: Export from Exness PA → Trading tab → History of orders → Download CSV → save to `./data/trades/`
+
+### /usdjpy-journal sync
+Pull trades directly from MT5 terminal (Windows only — requires `pip install MetaTrader5`).
+On Mac, falls back to CSV import with instructions.
+
+Run: `python3 scripts/journal.py sync`
+
+### /usdjpy-journal open
+Manual journal entry for a planned or active trade.
+Auto-attaches current Module 07 + Module 08 signals.
+
+Run: `python3 scripts/journal.py open LONG 159.36 159.22 160.00 --lots 0.01 --note "OB entry"`
+
+### /usdjpy-journal close
+Close an open journal entry. Calculates pips, actual R:R, duration.
+
+Run: `python3 scripts/journal.py close <ticket> <exit_price> --grade B --reason "Hit T1"`
+
+### /usdjpy-journal review
+Performance summary: win rate, avg P&L, avg R:R, performance by setup type,
+bias alignment, day of week, current streak, self-assessment grades.
+
+Run: `python3 scripts/journal.py review`
 
 ## Architecture
 
@@ -139,6 +168,16 @@ Each module file specifies: exact API endpoints + parameters, calculation formul
 Raw API responses are saved as: `./data/raw/{SOURCE}_{SERIES}_{YYYY-MM-DD}.json`
 
 Cache validity: FRED = 24h, Yahoo Finance price = 4h, COT = 7 days, central bank statements = until next meeting.
+
+### Trade journal data
+
+```
+./data/trades/           ← Drop Exness CSV exports here
+./output/journal/
+  ├── trade_log.csv      ← Master trade log (append-only)
+  ├── YYYY-MM-DD_<ticket>_open.md    ← Individual open entries
+  └── YYYY-MM-DD_<ticket>_closed.md  ← Individual closed entries
+```
 
 ### Automated runners (for cron)
 
