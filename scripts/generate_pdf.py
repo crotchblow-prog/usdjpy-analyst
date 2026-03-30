@@ -1123,11 +1123,13 @@ def parse_playbook_data(md_text):
         section_end = header_pos + next_section.start() if next_section else len(md_text)
         section_text = md_text[header_pos:section_end]
 
+        # Extract sessions in markdown order (preserves chronological order)
         sessions = {}
-        for sess in ["Tokyo", "London", "New York"]:
-            sm = re.search(rf"\*\*{re.escape(sess)}:\*\*\s*(.+?)$", section_text, re.MULTILINE)
-            if sm:
-                sessions[sess] = sm.group(1).strip()
+        sess_matches = re.findall(
+            r"\*\*(Tokyo|London|New York):\*\*\s*(.+?)$",
+            section_text, re.MULTILINE)
+        for sess_name, sess_text in sess_matches:
+            sessions[sess_name] = sess_text.strip()
 
         action = ""
         am = re.search(r"\*\*Action:\*\*\s*(.+?)$", section_text, re.MULTILINE)
@@ -1270,7 +1272,11 @@ def make_smc_hero(sd, contradictions):
     if sd.get("t1_rr"):
         verdict_parts.append(f"{sd['t1_rr']:.1f}R to first target")
     verdict = ", ".join(verdict_parts)
-    if is_weak:
+    if grade in ("A+", "A"):
+        verdict = f'<font color="#27AE60">STRONG SETUP</font>&nbsp;&nbsp;\u2014&nbsp;&nbsp;' + verdict
+    elif grade == "B":
+        verdict = f'<font color="#F39C12">TRADEABLE</font>&nbsp;&nbsp;\u2014&nbsp;&nbsp;' + verdict
+    else:
         verdict = f'<font color="#E74C3C">WEAK SETUP \u2014 CONSIDER SKIPPING</font>&nbsp;&nbsp;|&nbsp;&nbsp;' + verdict
     verdict_s = ParagraphStyle("hv", fontName="Helvetica", fontSize=11,
                                 leading=14, textColor=muted_c)
