@@ -27,7 +27,7 @@ CHECK_MODE = "--check" in sys.argv  # cache-only: no API calls, fail if no data
 BASE_DIR   = Path(__file__).parent
 DATA_RAW   = BASE_DIR / "data" / "raw"
 OUTPUT_DIR = BASE_DIR / "output" / "daily"
-TODAY      = date(2026, 3, 30)
+TODAY      = date.today()
 TODAY_STR  = TODAY.strftime("%Y-%m-%d")
 START_DATE = (TODAY - timedelta(days=730)).strftime("%Y-%m-%d")   # 2yr for SMA200
 
