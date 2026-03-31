@@ -1861,6 +1861,14 @@ def main():
             else:
                 print("  PDF script not found — skipping PDF generation")
 
+    # Push to Supabase
+    if report_path and args.mode == "full":
+        try:
+            from scripts.push_to_supabase import push_report
+            push_report(report_path, report_type="smc")
+        except Exception as e:
+            print(f"  Supabase push failed (non-blocking): {e}")
+
     print("\nDone!")
     return results
 

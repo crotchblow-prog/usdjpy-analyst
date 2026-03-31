@@ -381,6 +381,13 @@ def import_trades():
     if all_trades:
         append_to_trade_log(all_trades)
         print(f"\n  Imported {len(all_trades)} new trades → {TRADE_LOG_PATH}")
+        # Push to Supabase
+        try:
+            from scripts.push_to_supabase import push_journal_entry
+            for t in all_trades:
+                push_journal_entry(t)
+        except Exception as e:
+            print(f"  Supabase push failed (non-blocking): {e}")
     else:
         print("\n  No new trades to import (all duplicates or no USDJPY trades)")
 
@@ -673,6 +680,13 @@ def manual_open(direction, entry, stop, target, lots="0.01", rationale=""):
     append_to_trade_log([trade])
     _write_journal_entry(trade, today, True, m07_bias, m07_score,
                          m08_scenario, m08_confluence)
+
+    # Push to Supabase
+    try:
+        from scripts.push_to_supabase import push_journal_entry
+        push_journal_entry(trade)
+    except Exception as e:
+        print(f"  Supabase push failed (non-blocking): {e}")
 
     print(f"Journal entry created: {ticket}")
     print(f"  {direction} USDJPY @ {entry:.3f}")

@@ -548,7 +548,30 @@ def run_scorecard(smc_data):
         high_time, low_time, close_time, scored, best, entry_hit,
         theo_pl, mae, mfe, stats,
     )
-    return report, best
+
+    # Build structured result for Supabase push
+    outcome_by_type = {}
+    for sc in scored:
+        t = sc["type"].lower().replace(" ", "_")
+        outcome_by_type[t] = sc["outcome"]
+
+    scorecard_result = {
+        "type": best["type"] if best else None,
+        "window_start": gen_time.isoformat() if gen_time else None,
+        "window_end": window_end.isoformat() if window_end else None,
+        "actual_high": actual_high,
+        "actual_low": actual_low,
+        "actual_close": actual_close,
+        "primary_outcome": outcome_by_type.get("primary"),
+        "alternative_outcome": outcome_by_type.get("alternative"),
+        "tail_risk_outcome": outcome_by_type.get("tail_risk"),
+        "best_match": best["type"] if best else None,
+        "entry_zone_hit": entry_hit["hit"],
+        "theoretical_pl_pips": theo_pl,
+        "mae_pips": mae,
+        "mfe_pips": mfe,
+    }
+    return report, scorecard_result
 
 
 def _score_scenario(scenario, df, entry_price, stop_price, target1, direction):
@@ -1004,6 +1027,14 @@ def main():
 
     # Print to stdout
     print("\n" + report)
+
+    # Push scorecard to Supabase
+    if args.mode == "scorecard" and status_info is not None:
+        try:
+            from scripts.push_to_supabase import push_scorecard
+            push_scorecard(status_info, smc_report_date=smc_data["date"])
+        except Exception as e:
+            print(f"  Supabase push failed (non-blocking): {e}")
 
     # Email
     if not args.no_email:

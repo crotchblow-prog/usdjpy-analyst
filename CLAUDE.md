@@ -16,14 +16,16 @@ bash setup.sh          # creates dirs, checks deps, prompts for FRED key + email
 pip install pyyaml     # required for send_report.py
 pip install yfinance   # required for /usdjpy-entry (Module 08)
 pip install matplotlib pandas numpy scipy
+pip install supabase   # required for web dashboard data push
 ```
 
-Environment variable for email delivery (add to `~/.zshrc`):
+Environment variables (add to `~/.zshrc`):
 ```bash
 export USDJPY_EMAIL_PASSWORD="your_namecheap_smtp_password"
+export SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_role_key"
 ```
 
-After setup, update `config.yaml`: set `fred.api_key` (free at fred.stlouisfed.org) and `email.to_address`.
+After setup, update `config.yaml`: set `fred.api_key` (free at fred.stlouisfed.org), `email.to_address`, and `supabase.url`.
 
 ## Commands
 
@@ -205,6 +207,22 @@ Cache validity: FRED = 24h, Yahoo Finance price = 4h, COT = 7 days, central bank
 
 ```bash
 python3 send_report.py ./output/daily/2026-03-29.md [chart.png ...]
+```
+
+### Supabase (web dashboard)
+
+`scripts/push_to_supabase.py` pushes report data to Supabase for the web dashboard. It's integrated into:
+- `scripts/run_smc_analysis.py` — pushes SMC report + scenarios + zones + liquidity levels
+- `scripts/run_scenario_monitor.py` — pushes scorecard results
+- `scripts/journal.py` — pushes journal entries
+
+All pushes are wrapped in try/except so Supabase failures never block report generation.
+
+Tables: `reports`, `scenarios`, `scorecard`, `zones`, `liquidity_levels`, `journal_entries`. Upsert on `(date, report_type)` prevents duplicates.
+
+Standalone usage:
+```bash
+python3 scripts/push_to_supabase.py output/daily/smc_2026-03-31.md
 ```
 
 ## Execution Rules

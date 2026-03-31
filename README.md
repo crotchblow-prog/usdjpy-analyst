@@ -1,8 +1,10 @@
-# USD/JPY Analyst
+# SMC Pulse
 
-Personal USD/JPY analysis workstation built with [Claude Code](https://claude.ai/code).
+**Smart Money Concepts analysis for forex trading.**
 
-> This is a private project for personal use — not a public tool or service.
+Website: [smcpulse.com](https://smcpulse.com) | Built with [Claude Code](https://claude.ai/code)
+
+> Currently USD/JPY only. Multi-pair support planned.
 
 ## What It Does
 
@@ -12,7 +14,7 @@ Three questions the system answers each trading day:
 2. **Where do I enter?** — Module 08 identifies Smart Money Concepts (order blocks, FVGs, liquidity levels) across 4 timeframes and outputs a graded entry plan.
 3. **What are the realistic paths?** — The 12h Playbook projects 3 probability-weighted price scenarios over the next 2 trading sessions with a visual path chart.
 
-Reports are delivered as markdown + PDF via email twice daily.
+Reports are pushed to the web dashboard at [smcpulse.com](https://smcpulse.com) and optionally delivered as markdown + PDF via email.
 
 ## Architecture
 

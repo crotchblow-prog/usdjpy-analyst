@@ -16,3 +16,4 @@ data/raw/
 
 # Logs
 logs/
+.vercel

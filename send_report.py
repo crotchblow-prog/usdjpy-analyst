@@ -88,10 +88,10 @@ def build_subject(report_type, report_date, md_text):
     if report_type == "smc":
         grade = extract_smc_grade(md_text)
         suffix = f" [{grade}]" if grade else ""
-        return f"USD/JPY SMC Report — {report_date}{suffix}"
+        return f"SMC Pulse — SMC Report {report_date}{suffix}"
     if report_type == "weekly":
-        return f"USD/JPY Weekly Report — {report_date}"
-    return f"USD/JPY Daily Report — {report_date}"
+        return f"SMC Pulse — Weekly Report {report_date}"
+    return f"SMC Pulse — Daily Report {report_date}"
 
 
 def send_report(report_path, report_type=None, extra_files=None):
@@ -132,7 +132,7 @@ def send_report(report_path, report_type=None, extra_files=None):
 
     # Build email
     msg = MIMEMultipart("mixed")
-    msg["From"] = f"USD/JPY Analyst <{from_addr}>"
+    msg["From"] = f"SMC Pulse <{from_addr}>"
     msg["To"] = to_addr
     msg["Subject"] = build_subject(report_type, report_date, report_text)
 
