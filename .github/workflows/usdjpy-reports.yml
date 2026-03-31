@@ -14,6 +14,10 @@ on:
     - cron: '30 13 * * 1-5'
     # 04:30 JST next day = 19:30 UTC — Scorecard (12h after afternoon SMC)
     - cron: '30 19 * * 1-5'
+    # 09:00 JST = 00:00 UTC — Validation (30min after morning report)
+    - cron: '0 0 * * 1-5'
+    # 17:00 JST = 08:00 UTC — Validation (30min after afternoon SMC)
+    - cron: '0 8 * * 1-5'
   workflow_dispatch:
     inputs:
       report_type:
@@ -28,6 +32,7 @@ on:
           - smc
           - monitor
           - scorecard
+          - validation
 
 env:
   TZ: Asia/Tokyo
@@ -72,6 +77,7 @@ jobs:
           echo "smc=false" >> $GITHUB_OUTPUT
           echo "monitor=false" >> $GITHUB_OUTPUT
           echo "scorecard=false" >> $GITHUB_OUTPUT
+          echo "validation=false" >> $GITHUB_OUTPUT
 
           # Manual trigger
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -91,6 +97,9 @@ jobs:
             fi
             if [ "$TYPE" = "all" ] || [ "$TYPE" = "scorecard" ]; then
               echo "scorecard=true" >> $GITHUB_OUTPUT
+            fi
+            if [ "$TYPE" = "all" ] || [ "$TYPE" = "validation" ]; then
+              echo "validation=true" >> $GITHUB_OUTPUT
             fi
             exit 0
           fi
@@ -132,6 +141,16 @@ jobs:
               # 19:30 UTC = 04:30 JST — Scorecard (12h after afternoon SMC)
               echo "type=scorecard-pm" >> $GITHUB_OUTPUT
               echo "scorecard=true" >> $GITHUB_OUTPUT
+              ;;
+            "0 0 * * 1-5")
+              # 00:00 UTC = 09:00 JST — Validation (morning)
+              echo "type=validation-am" >> $GITHUB_OUTPUT
+              echo "validation=true" >> $GITHUB_OUTPUT
+              ;;
+            "0 8 * * 1-5")
+              # 08:00 UTC = 17:00 JST — Validation (afternoon)
+              echo "type=validation-pm" >> $GITHUB_OUTPUT
+              echo "validation=true" >> $GITHUB_OUTPUT
               ;;
           esac
 
@@ -219,6 +238,16 @@ jobs:
           python scripts/run_scenario_monitor.py --mode scorecard
           echo "status=success" >> $GITHUB_OUTPUT
 
+      - name: Run Validation
+        if: steps.run-type.outputs.validation == 'true'
+        id: validation
+        continue-on-error: true
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python scripts/run_validation.py
+          echo "status=success" >> $GITHUB_OUTPUT
+
       - name: Commit scorecard data
         if: steps.run-type.outputs.scorecard == 'true' && steps.scorecard.outcome == 'success'
         continue-on-error: true
@@ -255,6 +284,7 @@ jobs:
           if [ "${{ steps.run-type.outputs.scorecard }}" = "true" ]; then
             echo "| Scorecard | ${{ steps.scorecard.outcome }} |" >> $GITHUB_STEP_SUMMARY
           fi
+          echo "| Validation | ${{ steps.validation.outcome || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Generated files:" >> $GITHUB_STEP_SUMMARY
           find output -name "*.md" -o -name "*.pdf" -o -name "*.png" -o -name "*.csv" 2>/dev/null | sort >> $GITHUB_STEP_SUMMARY
