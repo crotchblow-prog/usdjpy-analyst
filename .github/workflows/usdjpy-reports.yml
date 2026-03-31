@@ -95,37 +95,45 @@ jobs:
             exit 0
           fi
 
-          # Scheduled trigger — check UTC hour to determine which run
-          HOUR_UTC=$(date -u +%H)
-          if [ "$HOUR_UTC" -ge 20 ]; then
-            # 23:30 UTC = 08:30 JST morning run
-            echo "type=morning" >> $GITHUB_OUTPUT
-            echo "daily=true" >> $GITHUB_OUTPUT
-            echo "smc=true" >> $GITHUB_OUTPUT
-            if [ "$JST_DOW" -eq 1 ]; then
-              echo "weekly=true" >> $GITHUB_OUTPUT
-            fi
-          elif [ "$HOUR_UTC" -eq 5 ]; then
-            # 05:30 UTC = 14:30 JST — Monitor (6h after morning SMC)
-            echo "type=monitor-am" >> $GITHUB_OUTPUT
-            echo "monitor=true" >> $GITHUB_OUTPUT
-          elif [ "$HOUR_UTC" -eq 7 ]; then
-            # 07:30 UTC = 16:30 JST afternoon run (SMC only)
-            echo "type=afternoon" >> $GITHUB_OUTPUT
-            echo "smc=true" >> $GITHUB_OUTPUT
-          elif [ "$HOUR_UTC" -eq 11 ]; then
-            # 11:30 UTC = 20:30 JST — Scorecard (12h after morning SMC)
-            echo "type=scorecard-am" >> $GITHUB_OUTPUT
-            echo "scorecard=true" >> $GITHUB_OUTPUT
-          elif [ "$HOUR_UTC" -eq 13 ]; then
-            # 13:30 UTC = 22:30 JST — Monitor (6h after afternoon SMC)
-            echo "type=monitor-pm" >> $GITHUB_OUTPUT
-            echo "monitor=true" >> $GITHUB_OUTPUT
-          elif [ "$HOUR_UTC" -eq 19 ]; then
-            # 19:30 UTC = 04:30 JST — Scorecard (12h after afternoon SMC)
-            echo "type=scorecard-pm" >> $GITHUB_OUTPUT
-            echo "scorecard=true" >> $GITHUB_OUTPUT
-          fi
+          # Scheduled trigger — match on the cron expression that fired
+          # (immune to GitHub Actions delay which can shift the actual hour)
+          CRON="${{ github.event.schedule }}"
+          case "$CRON" in
+            "30 23 * * 0-4")
+              # 23:30 UTC = 08:30 JST morning run
+              echo "type=morning" >> $GITHUB_OUTPUT
+              echo "daily=true" >> $GITHUB_OUTPUT
+              echo "smc=true" >> $GITHUB_OUTPUT
+              if [ "$JST_DOW" -eq 1 ]; then
+                echo "weekly=true" >> $GITHUB_OUTPUT
+              fi
+              ;;
+            "30 5 * * 1-5")
+              # 05:30 UTC = 14:30 JST — Monitor (6h after morning SMC)
+              echo "type=monitor-am" >> $GITHUB_OUTPUT
+              echo "monitor=true" >> $GITHUB_OUTPUT
+              ;;
+            "30 7 * * 1-5")
+              # 07:30 UTC = 16:30 JST afternoon run (SMC only)
+              echo "type=afternoon" >> $GITHUB_OUTPUT
+              echo "smc=true" >> $GITHUB_OUTPUT
+              ;;
+            "30 11 * * 1-5")
+              # 11:30 UTC = 20:30 JST — Scorecard (12h after morning SMC)
+              echo "type=scorecard-am" >> $GITHUB_OUTPUT
+              echo "scorecard=true" >> $GITHUB_OUTPUT
+              ;;
+            "30 13 * * 1-5")
+              # 13:30 UTC = 22:30 JST — Monitor (6h after afternoon SMC)
+              echo "type=monitor-pm" >> $GITHUB_OUTPUT
+              echo "monitor=true" >> $GITHUB_OUTPUT
+              ;;
+            "30 19 * * 1-5")
+              # 19:30 UTC = 04:30 JST — Scorecard (12h after afternoon SMC)
+              echo "type=scorecard-pm" >> $GITHUB_OUTPUT
+              echo "scorecard=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
 
       - name: Run Daily Report
         if: steps.run-type.outputs.daily == 'true'
