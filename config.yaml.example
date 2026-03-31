@@ -100,6 +100,21 @@ supabase:
   anon_key: ""                         # Optional — only needed for client-side
   # Service role key stored in environment variable SUPABASE_SERVICE_ROLE_KEY
 
+# Validation settings
+validation:
+  enabled: true
+  tolerances:
+    rsi: 2.0          # points
+    sma: 0.05         # yen
+    macd: 0.02        # yen
+    spot_pct: 0.001   # 0.1%
+    correlation: 0.05  # absolute
+    spread_pct: 0.0005 # 0.05%
+  sources:
+    yahoo: true
+    investing: true
+    tradingview: true
+
 # Schedule
 schedule:
   daily_run_time: "10:00"              # 10:00 AM JST (after Tokyo fix at 9:55)
