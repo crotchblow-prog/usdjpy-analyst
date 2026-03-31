@@ -168,7 +168,7 @@ usdjpy-analyst/
 | 3 | 02 + 04 | Central bank policy (BOJ/Fed) + CFTC COT positioning |
 | 4 | 06 | Seasonality, fiscal year flows, trade balance |
 | 5 | 08 | SMC engine, entry zones, 12h playbook, PDF reports, trade journal |
-| 6 | 10 | Scenario monitor — *planned* |
+| 6 | 09 | Scenario monitor — *planned* |
 
 ## Testing
 

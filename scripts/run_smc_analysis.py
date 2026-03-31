@@ -109,31 +109,53 @@ def read_module07_bias():
     """
     Read the most recent daily or weekly report to extract Module 07 bias.
     Returns dict with direction, confidence, risk_alerts, recommendation.
+    Prefers today's report; falls back to yesterday's; warns if >24h stale.
     """
+    today = dt.date.today()
+    today_str = today.strftime("%Y-%m-%d")
+    yesterday_str = (today - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+
     output_dirs = [
         os.path.join(PROJECT_ROOT, "output", "daily"),
         os.path.join(PROJECT_ROOT, "output", "weekly"),
     ]
 
-    latest_file = None
-    latest_date = None
-
-    for d in output_dirs:
-        if not os.path.isdir(d):
-            continue
-        # Match YYYY-MM-DD.md but not smc_*.md
-        for f in glob.glob(os.path.join(d, "*.md")):
-            basename = os.path.basename(f)
-            if basename.startswith("smc_"):
+    # First pass: look for today's report
+    target_file = None
+    target_date = None
+    for priority_date in [today_str, yesterday_str]:
+        if target_file:
+            break
+        for d in output_dirs:
+            if not os.path.isdir(d):
                 continue
-            match = re.match(r"(\d{4}-\d{2}-\d{2})\.md$", basename)
-            if match:
-                file_date = match.group(1)
-                if latest_date is None or file_date > latest_date:
-                    latest_date = file_date
-                    latest_file = f
+            candidate = os.path.join(d, f"{priority_date}.md")
+            if os.path.isfile(candidate):
+                target_file = candidate
+                target_date = priority_date
+                break
 
-    if latest_file is None:
+    # Fallback: scan for the most recent report file
+    if target_file is None:
+        latest_file = None
+        latest_date = None
+        for d in output_dirs:
+            if not os.path.isdir(d):
+                continue
+            for f in glob.glob(os.path.join(d, "*.md")):
+                basename = os.path.basename(f)
+                if basename.startswith("smc_"):
+                    continue
+                match = re.match(r"(\d{4}-\d{2}-\d{2})\.md$", basename)
+                if match:
+                    file_date = match.group(1)
+                    if latest_date is None or file_date > latest_date:
+                        latest_date = file_date
+                        latest_file = f
+        target_file = latest_file
+        target_date = latest_date
+
+    if target_file is None:
         return {
             "direction": "NEUTRAL",
             "confidence": "LOW",
@@ -143,7 +165,7 @@ def read_module07_bias():
             "report_date": None,
         }
 
-    with open(latest_file, "r") as f:
+    with open(target_file, "r") as f:
         content = f.read()
 
     # Extract bias from Module 07 checklist
@@ -201,6 +223,17 @@ def read_module07_bias():
     energy_risk = any("energy" in a.lower() for a in risk_alerts)
     event_risk = any("event" in a.lower() for a in risk_alerts)
 
+    # Warn if bias data is >24h stale
+    stale_warning = None
+    if target_date and target_date < today_str:
+        try:
+            report_dt = dt.datetime.strptime(target_date, "%Y-%m-%d").date()
+            age_days = (today - report_dt).days
+            if age_days >= 1:
+                stale_warning = f"⚠ Module 07 bias from {target_date} (stale — run /usdjpy-daily first)"
+        except ValueError:
+            pass
+
     return {
         "direction": direction,
         "confidence": confidence,
@@ -209,8 +242,9 @@ def read_module07_bias():
         "intervention_risk": intervention_risk,
         "energy_risk": energy_risk,
         "event_risk": event_risk,
-        "source_file": latest_file,
-        "report_date": latest_date,
+        "source_file": target_file,
+        "report_date": target_date,
+        "stale_warning": stale_warning,
     }
 
 
@@ -893,6 +927,27 @@ def generate_report(results, mode="full"):
     return "\n".join(lines)
 
 
+def _get_recommendation(r):
+    """Auto-populate recommendation based on confluence grade."""
+    # Use Module 07 recommendation if available
+    bias_rec = r.get("bias", {}).get("recommendation", "").strip()
+    if bias_rec:
+        return bias_rec[:200]
+
+    # Fall back to confluence grade
+    grade = r.get("confluence", {}).get("grade", "")
+    if grade == "A+":
+        return "High-confluence setup — trade per plan"
+    elif grade == "A":
+        return "High-confluence setup — trade per plan"
+    elif grade == "B":
+        return "Tradeable with caution — check warnings"
+    elif grade == "C":
+        return "Weak setup — consider skipping or reduce size"
+    else:
+        return "No trade — wait for better structure"
+
+
 def _section_context(r):
     """Context section: bias, intervention risk, COT, events, alignment."""
     bias = r["bias"]
@@ -904,16 +959,20 @@ def _section_context(r):
 
     alerts = "\n".join(f"- {a}" for a in bias.get("risk_alerts", [])) or "- None"
 
+    stale_note = ""
+    if bias.get("stale_warning"):
+        stale_note = f"\n> {bias['stale_warning']}\n"
+
     return f"""### Context (from Module 07)
 
 **Direction:** {direction}
 **Confidence:** {confidence}
 **Report Date:** {bias.get('report_date', 'N/A')}
-{neutral_note}
+{neutral_note}{stale_note}
 **Risk Alerts:**
 {alerts}
 
-**Recommendation:** {bias.get('recommendation', 'N/A')[:200]}
+**Recommendation:** {_get_recommendation(r)}
 
 ---
 """

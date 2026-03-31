@@ -283,6 +283,15 @@ def _make_order_block(ob_type, df, i, c_open, c_close, c_high, c_low, timeframe,
             nearest_intervention = level
             break
 
+    # Enforce minimum zone width: 3 pips for 5M/15M, 5 pips for 1H/4H
+    min_width_pips = 5 if timeframe in ("4H", "4h", "1H", "1h") else 3
+    min_width = min_width_pips * 0.01  # JPY pair: 1 pip = 0.01
+    zone_width = zone_top - zone_bottom
+    if zone_width < min_width:
+        expand = (min_width - zone_width) / 2
+        zone_top += expand
+        zone_bottom -= expand
+
     return {
         "type": ob_type,
         "datetime": df.index[i],
