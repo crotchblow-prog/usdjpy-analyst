@@ -141,10 +141,16 @@ def extract_our_values(module_data):
             ml = m03.get("macd_line")
         if ms is None:
             ms = m03.get("macd_signal")
-        if ml is not None:
-            values["macd_line"] = (float(ml), "module_03")
-        if ms is not None:
-            values["macd_signal"] = (float(ms), "module_03")
+        try:
+            if ml is not None:
+                values["macd_line"] = (float(ml), "module_03")
+        except (ValueError, TypeError):
+            pass
+        try:
+            if ms is not None:
+                values["macd_signal"] = (float(ms), "module_03")
+        except (ValueError, TypeError):
+            pass
 
     # Module 05: cross-asset correlations
     m05 = module_data.get("module_05", {})
@@ -153,8 +159,11 @@ def extract_our_values(module_data):
         if isinstance(corr_block, dict):
             for asset_name, corr_val in corr_block.items():
                 if corr_val is not None:
-                    key = f"corr_{asset_name.lower()}"
-                    values[key] = (float(corr_val), "module_05")
+                    try:
+                        key = f"corr_{asset_name.lower()}"
+                        values[key] = (float(corr_val), "module_05")
+                    except (ValueError, TypeError):
+                        pass
 
     return values
 
@@ -267,7 +276,7 @@ def run_validation(date_str, no_push=False):
                 "module": module_label,
                 "indicator": indicator,
                 "our_value": our_val,
-                "source_name": None,
+                "source_name": "none",
                 "source_value": None,
                 "tolerance": tolerance,
                 "diff": None,
