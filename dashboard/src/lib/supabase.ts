@@ -115,3 +115,18 @@ export interface JournalEntry {
   bias_aligned: boolean | null;
   notes: string | null;
 }
+
+export interface ValidationResult {
+  id: string;
+  report_id: string | null;
+  date: string;
+  module: string;
+  indicator: string;
+  our_value: number | null;
+  source_name: string;
+  source_value: number | null;
+  tolerance: number | null;
+  diff: number | null;
+  status: "PASS" | "WARN" | "FAIL" | "SKIP";
+  checked_at: string;
+}
