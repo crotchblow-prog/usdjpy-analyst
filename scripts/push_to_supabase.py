@@ -1006,6 +1006,54 @@ def push_scorecard(scorecard_data, smc_report_date=None):
     return result.data[0]["id"] if result.data else None
 
 
+def push_validation_results(results, report_date):
+    """Push validation results to Supabase.
+
+    results: list of dicts with keys matching the validation table columns.
+    report_date: YYYY-MM-DD string.
+    """
+    if not results:
+        print("  No validation results to push.")
+        return
+
+    print(f"  Pushing {len(results)} validation results to Supabase...")
+    client = get_supabase_client()
+
+    # Find report_id for linking (optional)
+    report_id = None
+    report_res = client.table("reports").select("id").eq(
+        "date", report_date
+    ).eq("report_type", "daily").execute()
+    if report_res.data:
+        report_id = report_res.data[0]["id"]
+
+    # Delete existing validation for this date (re-run safe)
+    client.table("validation").delete().eq("date", report_date).execute()
+
+    # Build rows
+    rows = []
+    for r in results:
+        rows.append({
+            "report_id": report_id,
+            "date": report_date,
+            "module": r["module"],
+            "indicator": r["indicator"],
+            "our_value": r["our_value"],
+            "source_name": r["source_name"],
+            "source_value": r["source_value"],
+            "tolerance": r["tolerance"],
+            "diff": r["diff"],
+            "status": r["status"],
+        })
+
+    # Insert in batches of 50
+    for i in range(0, len(rows), 50):
+        batch = rows[i:i + 50]
+        client.table("validation").insert(batch).execute()
+
+    print(f"    Validation results pushed ({len(rows)} rows)")
+
+
 def push_journal_entry(trade_dict):
     """Push a single journal entry to Supabase.
 
