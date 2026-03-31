@@ -28,6 +28,7 @@ Reports are delivered as markdown + PDF via email twice daily.
 | 06 | Seasonality | Weekly | Reference data | Seasonal bias, flow events, trade balance |
 | 07 | Checklist | Daily | Modules 01-06 | Weighted signal aggregation → direction + confidence |
 | 08 | SMC Entry | On-demand | Yahoo Finance | Order blocks, FVGs, entry zones, 12h playbook |
+| 09 | Scenario Monitor | Post-SMC | Yahoo Finance | Live check + scorecard — which scenario played out? |
 
 ### Signal Flow
 
@@ -74,6 +75,8 @@ These terms are never mixed in output. "Setup" appears in the entry report. "Sce
 | `/usdjpy-journal open` | Manual trade entry with auto-attached signals |
 | `/usdjpy-journal close` | Close trade with pips/R:R calculation |
 | `/usdjpy-journal review` | Performance summary and bias alignment analysis |
+| `/usdjpy-monitor` | Live check: which playbook scenario is unfolding? |
+| `/usdjpy-scorecard` | Post-session scorecard with scenario accuracy stats |
 
 ## Automated Schedule
 
@@ -82,7 +85,11 @@ Reports run via GitHub Actions and are emailed automatically.
 | Time (JST) | UTC | Days | Reports |
 |------------|-----|------|---------|
 | 08:30 | 23:30 prev day | Mon-Fri | Daily + SMC (+ Weekly on Monday) |
+| 14:30 | 05:30 | Mon-Fri | Monitor live check (6h after morning SMC) |
 | 16:30 | 07:30 | Mon-Fri | SMC only (afternoon update) |
+| 20:30 | 11:30 | Mon-Fri | Scorecard (12h after morning SMC) |
+| 22:30 | 13:30 | Mon-Fri | Monitor live check (6h after afternoon SMC) |
+| 04:30+1 | 19:30 | Mon-Fri | Scorecard (12h after afternoon SMC) |
 
 Manual trigger available via `workflow_dispatch` with report type selector (all/daily/weekly/smc).
 
@@ -132,6 +139,7 @@ usdjpy-analyst/
 ├── scripts/
 │   ├── run_smc_analysis.py            # Module 08 orchestrator + playbook + charts
 │   ├── smc_engine.py                  # SMC core: swing detection, OBs, FVGs, BOS/ChoCH
+│   ├── run_scenario_monitor.py         # Module 09: live check + scorecard
 │   ├── generate_pdf.py                # PDF renderer (daily, weekly, SMC reports)
 │   └── journal.py                     # Trade journal: CSV import, MT5 sync, review
 │
@@ -151,8 +159,9 @@ usdjpy-analyst/
 │   └── trades/                        # Exness CSV exports for journal import
 │
 ├── output/
-│   ├── daily/                         # Daily reports, SMC reports, charts, PDFs
+│   ├── daily/                         # Daily reports, SMC reports, monitor checks, charts, PDFs
 │   ├── weekly/                        # Weekly reports, charts, PDFs
+│   ├── scorecard/                     # scenario_log.csv + scorecard reports
 │   └── journal/                       # trade_log.csv + individual entries
 │
 └── .github/workflows/
@@ -168,7 +177,7 @@ usdjpy-analyst/
 | 3 | 02 + 04 | Central bank policy (BOJ/Fed) + CFTC COT positioning |
 | 4 | 06 | Seasonality, fiscal year flows, trade balance |
 | 5 | 08 | SMC engine, entry zones, 12h playbook, PDF reports, trade journal |
-| 6 | 09 | Scenario monitor — *planned* |
+| 6 | 09 | Scenario monitor — live check + scorecard |
 
 ## Testing
 

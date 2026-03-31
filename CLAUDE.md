@@ -96,6 +96,18 @@ Quick Scenario D check — Tokyo Fix Fade. Best run at 09:50-10:00 JST.
 Run: `python3 scripts/run_smc_analysis.py --mode fix`
 Output: `./output/daily/smc_fix_YYYY-MM-DD.md`
 
+### /usdjpy-monitor
+Run Module 09 live check — which playbook scenario is currently unfolding?
+Reads the most recent SMC report, fetches 5M data since generation, and compares against the 3 scenarios.
+Run: `python3 scripts/run_scenario_monitor.py --mode check`
+Output: `./output/daily/monitor_YYYY-MM-DD.md`
+
+### /usdjpy-scorecard
+Run Module 09 scorecard — score each scenario after the 12h playbook window closes.
+Logs results to `./output/scorecard/scenario_log.csv` and prints running stats after 10+ entries.
+Run: `python3 scripts/run_scenario_monitor.py --mode scorecard`
+Output: `./output/scorecard/scorecard_YYYY-MM-DD.md`
+
 ### /usdjpy-journal import
 Import trades from Exness CSV export files in `./data/trades/`.
 - Parses Exness MT5 CSV format (auto-detects delimiter and column names)

@@ -15,6 +15,7 @@ Analyze USD/JPY trends using a 7-module framework covering macro (with JGB curve
 | 06 | Seasonality & Flows | Weekly | Static reference + calendar, web search (trade balance) |
 | 07 | Pre-Trade Checklist | Daily | Aggregates Modules 01-06 |
 | 08 | Smart Money Concepts | On-demand | Yahoo Finance (intraday) | **IMPLEMENTED** |
+| 09 | Scenario Monitor | Post-SMC | Yahoo Finance (5M) + SMC report | **IMPLEMENTED** |
 
 ## Execution Flow
 

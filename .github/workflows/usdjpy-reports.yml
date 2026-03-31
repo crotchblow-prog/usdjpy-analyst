@@ -4,8 +4,16 @@ on:
   schedule:
     # 08:30 JST = 23:30 UTC previous day (Mon-Fri → Sun-Thu UTC)
     - cron: '30 23 * * 0-4'
+    # 14:30 JST = 05:30 UTC — Monitor live check (6h after morning SMC)
+    - cron: '30 5 * * 1-5'
     # 16:30 JST = 07:30 UTC same day (Mon-Fri)
     - cron: '30 7 * * 1-5'
+    # 20:30 JST = 11:30 UTC — Scorecard (12h after morning SMC)
+    - cron: '30 11 * * 1-5'
+    # 22:30 JST = 13:30 UTC — Monitor live check (6h after afternoon SMC)
+    - cron: '30 13 * * 1-5'
+    # 04:30 JST next day = 19:30 UTC — Scorecard (12h after afternoon SMC)
+    - cron: '30 19 * * 1-5'
   workflow_dispatch:
     inputs:
       report_type:
@@ -18,6 +26,8 @@ on:
           - daily
           - weekly
           - smc
+          - monitor
+          - scorecard
 
 env:
   TZ: Asia/Tokyo
@@ -43,7 +53,7 @@ jobs:
           sed -i "s/your_email@gmail.com/${{ secrets.GMAIL_ADDRESS }}/g" config.yaml
 
       - name: Create data directories
-        run: mkdir -p data/raw output/daily output/weekly logs
+        run: mkdir -p data/raw output/daily output/weekly output/scorecard logs
 
       - name: Determine run type
         id: run-type
@@ -52,47 +62,65 @@ jobs:
           JST_DOW=$(date +%u)  # 1=Mon ... 7=Sun
           echo "date=$JST_DATE" >> $GITHUB_OUTPUT
 
+          # Defaults
+          echo "daily=false" >> $GITHUB_OUTPUT
+          echo "weekly=false" >> $GITHUB_OUTPUT
+          echo "smc=false" >> $GITHUB_OUTPUT
+          echo "monitor=false" >> $GITHUB_OUTPUT
+          echo "scorecard=false" >> $GITHUB_OUTPUT
+
           # Manual trigger
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TYPE="${{ github.event.inputs.report_type }}"
             echo "type=$TYPE" >> $GITHUB_OUTPUT
             if [ "$TYPE" = "all" ] || [ "$TYPE" = "weekly" ]; then
               echo "weekly=true" >> $GITHUB_OUTPUT
-            else
-              echo "weekly=false" >> $GITHUB_OUTPUT
             fi
             if [ "$TYPE" = "all" ] || [ "$TYPE" = "daily" ]; then
               echo "daily=true" >> $GITHUB_OUTPUT
-            else
-              echo "daily=false" >> $GITHUB_OUTPUT
             fi
             if [ "$TYPE" = "all" ] || [ "$TYPE" = "smc" ] || [ "$TYPE" = "daily" ]; then
               echo "smc=true" >> $GITHUB_OUTPUT
-            else
-              echo "smc=false" >> $GITHUB_OUTPUT
+            fi
+            if [ "$TYPE" = "all" ] || [ "$TYPE" = "monitor" ]; then
+              echo "monitor=true" >> $GITHUB_OUTPUT
+            fi
+            if [ "$TYPE" = "all" ] || [ "$TYPE" = "scorecard" ]; then
+              echo "scorecard=true" >> $GITHUB_OUTPUT
             fi
             exit 0
           fi
 
-          # Scheduled trigger — check UTC hour to determine morning vs afternoon
+          # Scheduled trigger — check UTC hour to determine which run
           HOUR_UTC=$(date -u +%H)
           if [ "$HOUR_UTC" -ge 20 ]; then
             # 23:30 UTC = 08:30 JST morning run
             echo "type=morning" >> $GITHUB_OUTPUT
             echo "daily=true" >> $GITHUB_OUTPUT
             echo "smc=true" >> $GITHUB_OUTPUT
-            # Monday JST = check JST day-of-week
             if [ "$JST_DOW" -eq 1 ]; then
               echo "weekly=true" >> $GITHUB_OUTPUT
-            else
-              echo "weekly=false" >> $GITHUB_OUTPUT
             fi
-          else
+          elif [ "$HOUR_UTC" -eq 5 ]; then
+            # 05:30 UTC = 14:30 JST — Monitor (6h after morning SMC)
+            echo "type=monitor-am" >> $GITHUB_OUTPUT
+            echo "monitor=true" >> $GITHUB_OUTPUT
+          elif [ "$HOUR_UTC" -eq 7 ]; then
             # 07:30 UTC = 16:30 JST afternoon run (SMC only)
             echo "type=afternoon" >> $GITHUB_OUTPUT
-            echo "daily=false" >> $GITHUB_OUTPUT
-            echo "weekly=false" >> $GITHUB_OUTPUT
             echo "smc=true" >> $GITHUB_OUTPUT
+          elif [ "$HOUR_UTC" -eq 11 ]; then
+            # 11:30 UTC = 20:30 JST — Scorecard (12h after morning SMC)
+            echo "type=scorecard-am" >> $GITHUB_OUTPUT
+            echo "scorecard=true" >> $GITHUB_OUTPUT
+          elif [ "$HOUR_UTC" -eq 13 ]; then
+            # 13:30 UTC = 22:30 JST — Monitor (6h after afternoon SMC)
+            echo "type=monitor-pm" >> $GITHUB_OUTPUT
+            echo "monitor=true" >> $GITHUB_OUTPUT
+          elif [ "$HOUR_UTC" -eq 19 ]; then
+            # 19:30 UTC = 04:30 JST — Scorecard (12h after afternoon SMC)
+            echo "type=scorecard-pm" >> $GITHUB_OUTPUT
+            echo "scorecard=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Run Daily Report
@@ -176,6 +204,38 @@ jobs:
             python send_report.py "$REPORT" $CHARTS
           fi
 
+      - name: Run Monitor
+        if: steps.run-type.outputs.monitor == 'true'
+        id: monitor
+        continue-on-error: true
+        env:
+          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python scripts/run_scenario_monitor.py --mode check
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Run Scorecard
+        if: steps.run-type.outputs.scorecard == 'true'
+        id: scorecard
+        continue-on-error: true
+        env:
+          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python scripts/run_scenario_monitor.py --mode scorecard
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Commit scorecard data
+        if: steps.run-type.outputs.scorecard == 'true' && steps.scorecard.outcome == 'success'
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f output/scorecard/scenario_log.csv ]; then
+            git add output/scorecard/scenario_log.csv
+            git diff --cached --quiet || git commit -m "Update scenario scorecard [automated]"
+            git push
+          fi
+
       - name: Summary
         if: always()
         run: |
@@ -194,9 +254,15 @@ jobs:
           if [ "${{ steps.run-type.outputs.smc }}" = "true" ]; then
             echo "| SMC | ${{ steps.smc.outcome }} |" >> $GITHUB_STEP_SUMMARY
           fi
+          if [ "${{ steps.run-type.outputs.monitor }}" = "true" ]; then
+            echo "| Monitor | ${{ steps.monitor.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ steps.run-type.outputs.scorecard }}" = "true" ]; then
+            echo "| Scorecard | ${{ steps.scorecard.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Generated files:" >> $GITHUB_STEP_SUMMARY
-          find output -name "*.md" -o -name "*.pdf" -o -name "*.png" 2>/dev/null | sort >> $GITHUB_STEP_SUMMARY
+          find output -name "*.md" -o -name "*.pdf" -o -name "*.png" -o -name "*.csv" 2>/dev/null | sort >> $GITHUB_STEP_SUMMARY
 
       - name: Archive reports
         if: always()
