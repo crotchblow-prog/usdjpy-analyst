@@ -51,6 +51,10 @@ jobs:
           cp config.yaml.example config.yaml
           sed -i "s/YOUR_FRED_API_KEY_HERE/${{ secrets.FRED_API_KEY }}/" config.yaml
           sed -i "s/your_email@gmail.com/${{ secrets.GMAIL_ADDRESS }}/g" config.yaml
+          # Set Supabase URL in config
+          if [ -n "${{ secrets.SUPABASE_URL }}" ]; then
+            sed -i 's|url: ""|url: "${{ secrets.SUPABASE_URL }}"|' config.yaml
+          fi
 
       - name: Create data directories
         run: mkdir -p data/raw output/daily output/weekly output/scorecard logs
@@ -140,6 +144,17 @@ jobs:
             python scripts/generate_pdf.py "$REPORT"
           fi
 
+      - name: Push Daily to Supabase
+        if: steps.run-type.outputs.daily == 'true' && steps.daily.outcome == 'success'
+        continue-on-error: true
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          REPORT="output/daily/${{ steps.run-type.outputs.date }}.md"
+          if [ -f "$REPORT" ]; then
+            python scripts/push_to_supabase.py "$REPORT"
+          fi
+
       - name: Run Weekly Report
         if: steps.run-type.outputs.weekly == 'true'
         id: weekly
@@ -157,10 +172,23 @@ jobs:
             python scripts/generate_pdf.py "$REPORT"
           fi
 
+      - name: Push Weekly to Supabase
+        if: steps.run-type.outputs.weekly == 'true' && steps.weekly.outcome == 'success'
+        continue-on-error: true
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          REPORT="output/weekly/${{ steps.run-type.outputs.date }}.md"
+          if [ -f "$REPORT" ]; then
+            python scripts/push_to_supabase.py "$REPORT"
+          fi
+
       - name: Run SMC Report
         if: steps.run-type.outputs.smc == 'true'
         id: smc
         continue-on-error: true
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python scripts/run_smc_analysis.py --mode full
           echo "status=success" >> $GITHUB_OUTPUT
@@ -220,6 +248,7 @@ jobs:
         continue-on-error: true
         env:
           USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python scripts/run_scenario_monitor.py --mode scorecard
           echo "status=success" >> $GITHUB_OUTPUT
