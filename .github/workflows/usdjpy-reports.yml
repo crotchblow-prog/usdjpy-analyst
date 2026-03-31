@@ -193,51 +193,10 @@ jobs:
           python scripts/run_smc_analysis.py --mode full
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Send Daily Email
-        if: steps.run-type.outputs.daily == 'true' && steps.daily.outcome == 'success'
-        continue-on-error: true
-        env:
-          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: |
-          DATE="${{ steps.run-type.outputs.date }}"
-          REPORT="output/daily/${DATE}.md"
-          if [ -f "$REPORT" ]; then
-            CHARTS=$(ls output/daily/*${DATE}*.png 2>/dev/null || true)
-            python send_report.py "$REPORT" $CHARTS
-          fi
-
-      - name: Send Weekly Email
-        if: steps.run-type.outputs.weekly == 'true' && steps.weekly.outcome == 'success'
-        continue-on-error: true
-        env:
-          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: |
-          DATE="${{ steps.run-type.outputs.date }}"
-          REPORT="output/weekly/${DATE}.md"
-          if [ -f "$REPORT" ]; then
-            CHARTS=$(ls output/weekly/*${DATE}*.png 2>/dev/null || true)
-            python send_report.py "$REPORT" $CHARTS
-          fi
-
-      - name: Send SMC Email
-        if: steps.run-type.outputs.smc == 'true' && steps.smc.outcome == 'success'
-        continue-on-error: true
-        env:
-          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: |
-          DATE="${{ steps.run-type.outputs.date }}"
-          REPORT="output/daily/smc_${DATE}.md"
-          if [ -f "$REPORT" ]; then
-            CHARTS=$(ls output/daily/smc_entry_${DATE}*.png 2>/dev/null || true)
-            python send_report.py "$REPORT" $CHARTS
-          fi
-
       - name: Run Monitor
         if: steps.run-type.outputs.monitor == 'true'
         id: monitor
         continue-on-error: true
-        env:
-          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
           python scripts/run_scenario_monitor.py --mode check
           echo "status=success" >> $GITHUB_OUTPUT
@@ -247,7 +206,6 @@ jobs:
         id: scorecard
         continue-on-error: true
         env:
-          USDJPY_EMAIL_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python scripts/run_scenario_monitor.py --mode scorecard
