@@ -12,6 +12,11 @@ const MODULE_NAMES: Record<string, TranslationKey> = {
   "05": "validation.module05",
   "07": "validation.module07",
   "08": "validation.module08",
+  "module_01": "validation.module01",
+  "module_03": "validation.module03",
+  "module_05": "validation.module05",
+  "module_07": "validation.module07",
+  "module_08": "validation.module08",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -216,7 +221,7 @@ export default function ValidationPage() {
                     className="w-full flex items-center justify-between px-4 py-3 hover:bg-bg-card-hover transition-colors text-left"
                   >
                     <div className="flex items-center gap-3">
-                      <span className="font-mono text-xs text-text-muted w-6">{module}</span>
+                      <span className="font-mono text-xs text-text-muted w-6">M{module.replace("module_", "")}</span>
                       <span className="text-sm font-medium text-text-primary">{moduleName}</span>
                     </div>
                     <div className="flex items-center gap-3">
