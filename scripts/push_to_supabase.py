@@ -972,11 +972,11 @@ def push_scorecard(scorecard_data, smc_report_date=None):
             report_id = result.data[0]["id"]
 
     if not report_id:
-        print("    Warning: No matching SMC report found in Supabase")
-        return None
+        print("    Warning: No matching SMC report found in Supabase — pushing scorecard without report link")
 
     row = {
         "report_id": report_id,
+        "date": smc_report_date,
         "window_start": scorecard_data.get("window_start"),
         "window_end": scorecard_data.get("window_end"),
         "actual_high": scorecard_data.get("actual_high"),
@@ -992,11 +992,17 @@ def push_scorecard(scorecard_data, smc_report_date=None):
         "mfe_pips": scorecard_data.get("mfe_pips"),
     }
 
-    # Delete existing scorecard for this report (re-run safe)
-    client.table("scorecard").delete().eq("report_id", report_id).execute()
+    # Delete existing scorecard for this date+window (re-run safe, preserves 2nd session)
+    window_start = scorecard_data.get("window_start")
+    if smc_report_date and window_start:
+        client.table("scorecard").delete().eq("date", smc_report_date).eq("window_start", window_start).execute()
+    elif smc_report_date:
+        client.table("scorecard").delete().eq("date", smc_report_date).execute()
+    elif report_id:
+        client.table("scorecard").delete().eq("report_id", report_id).execute()
 
     result = client.table("scorecard").insert(row).execute()
-    print(f"    Scorecard pushed for report {report_id}")
+    print(f"    Scorecard pushed (report_id={report_id}, date={smc_report_date})")
     return result.data[0]["id"] if result.data else None
 
 
