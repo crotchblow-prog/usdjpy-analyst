@@ -198,7 +198,8 @@ export default function DailyPage() {
     );
   }
 
-  const moduleData = (report.module_data ?? {}) as ModuleData;
+  const rawModuleData = report.module_data ?? {};
+  const moduleData = (typeof rawModuleData === "string" ? JSON.parse(rawModuleData) : rawModuleData) as ModuleData;
   const m01 = moduleData.module_01;
   const m02 = moduleData.module_02;
   const m03 = moduleData.module_03;
