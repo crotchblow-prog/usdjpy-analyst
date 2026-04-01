@@ -20,7 +20,7 @@ Reports are delivered via web dashboard at [smcpulse.com](https://smcpulse.com) 
 
 ![SMC Pulse Architecture](smcpulse_architecture.png)
 
-External data flows through Claude Code analysis modules, gets pushed to GitHub via Actions cron, then to Supabase (data) and Vercel (dashboard) for delivery.
+External data flows through Python analysis modules, gets pushed to Supabase (data) and served via Vercel (dashboard) for delivery. Scheduling is handled by local cron.
 
 ### Modules
 
@@ -62,8 +62,8 @@ Features: auto dark/light theme, English + Traditional Chinese (中文), mobile-
 | Service | Role |
 |---------|------|
 | Supabase | PostgreSQL database + file storage (Tokyo region) |
-| Vercel | Next.js hosting + auto-deploy from GitHub |
-| GitHub Actions | Cron automation for report generation + data push |
+| Vercel | Next.js hosting + CLI deploy |
+| Local cron | Scheduled report generation + Supabase push |
 
 ## Commands
 
@@ -87,18 +87,20 @@ Features: auto dark/light theme, English + Traditional Chinese (中文), mobile-
 
 ## Automated Schedule
 
-Reports run via GitHub Actions cron. Data is pushed to Supabase after each run.
+Reports run via local cron (`run_local.sh`). Data is pushed to Supabase after each run.
 
-| Time (JST) | UTC Cron | Days | Reports |
-|------------|----------|------|---------|
-| 08:30 | `30 23 * * 0-4` | Mon-Fri | Daily + SMC (+ Weekly on Monday) |
-| 14:30 | `30 5 * * 1-5` | Mon-Fri | Module 09 live check (morning SMC) |
-| 16:30 | `30 7 * * 1-5` | Mon-Fri | SMC afternoon refresh |
-| 20:30 | `30 11 * * 1-5` | Mon-Fri | Module 09 scorecard (morning SMC) |
-| 22:30 | `30 13 * * 1-5` | Mon-Fri | Module 09 live check (afternoon SMC) |
-| 04:30+1 | `30 19 * * 1-5` | Mon-Fri | Module 09 scorecard (afternoon SMC) |
+| Time (JST) | Job | Days | Reports |
+|------------|-----|------|---------|
+| 08:30 | `morning` | Mon-Fri | Daily + SMC (+ Weekly on Monday) |
+| 09:00 | `validation` | Mon-Fri | Validation (morning) |
+| 14:30 | `monitor` | Mon-Fri | Module 09 live check (morning SMC) |
+| 16:30 | `afternoon` | Mon-Fri | SMC afternoon refresh |
+| 17:00 | `validation` | Mon-Fri | Validation (afternoon) |
+| 20:30 | `scorecard` | Mon-Fri | Module 09 scorecard (morning SMC) |
+| 22:30 | `monitor` | Mon-Fri | Module 09 live check (afternoon SMC) |
+| 04:30+1 | `scorecard` | Mon-Fri | Module 09 scorecard (afternoon SMC) |
 
-Manual trigger available via `workflow_dispatch` with report type selector (all/daily/weekly/smc/monitor/scorecard).
+Logs: `./logs/cron_<job>_<date>.log`. Manual run: `./run_local.sh <job>`.
 
 ## Setup
 
@@ -117,15 +119,14 @@ cp config.yaml.example config.yaml
 # Edit config.yaml: set fred.api_key and supabase.url
 ```
 
-### GitHub Secrets
+### Environment Variables
 
-| Secret | Purpose |
-|--------|---------|
-| `FRED_API_KEY` | FRED API access for macro data |
-| `GMAIL_APP_PASSWORD` | Gmail App Password for SMTP delivery (backup) |
-| `GMAIL_ADDRESS` | Sender/recipient email address |
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key for data push |
+Add to `~/.zshrc`:
+
+```bash
+export SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_role_key"
+export USDJPY_EMAIL_PASSWORD="your_smtp_password"  # optional, for email backup
+```
 
 ### First Run
 
@@ -157,7 +158,7 @@ usdjpy-analyst/
 ├── run_cb_analysis.py                 # Module 02: Central bank policy
 ├── run_cot_analysis.py                # Module 04: CFTC COT positioning
 ├── send_report.py                     # Email delivery via SMTP (backup)
-├── run_daily.sh / run_weekly.sh       # Cron wrappers
+├── run_local.sh                       # Local cron runner (all job types)
 │
 ├── skills/usdjpy/
 │   ├── SKILL.md                       # Execution flow and caching rules
@@ -186,7 +187,7 @@ usdjpy-analyst/
 │   └── playwright.config.ts           # E2E test config
 │
 └── .github/workflows/
-    └── usdjpy-reports.yml             # Automated report generation + Supabase push
+    └── usdjpy-reports.yml             # GitHub Actions workflow (disabled, kept as backup)
 ```
 
 ## Build Phases
