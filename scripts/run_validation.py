@@ -96,40 +96,55 @@ def extract_our_values(module_data):
     # Module 03: technicals
     m03 = module_data.get("module_03", {})
     if m03:
-        # USD/JPY spot
+        # USD/JPY spot — try nested dict, then flat keys
         price_block = m03.get("price", {})
         if isinstance(price_block, dict):
             spot = price_block.get("spot_usdjpy", price_block.get("spot", price_block.get("close")))
+        elif price_block is not None:
+            spot = price_block  # flat numeric value
         else:
-            spot = price_block
+            spot = None
         if spot is None:
-            spot = m03.get("spot_usdjpy")
+            spot = m03.get("spot_usdjpy", m03.get("spot"))
         if spot is not None:
-            values["spot_usdjpy"] = (float(spot), "module_03")
+            try:
+                values["spot_usdjpy"] = (float(spot), "module_03")
+            except (ValueError, TypeError):
+                pass
 
-        # RSI
+        # RSI — try nested dict, then flat keys
         rsi_block = m03.get("rsi", {})
         if isinstance(rsi_block, dict):
             rsi = rsi_block.get("rsi_14", rsi_block.get("value"))
+        elif rsi_block is not None:
+            rsi = rsi_block  # flat numeric value
         else:
-            rsi = rsi_block
+            rsi = None
         if rsi is None:
             rsi = m03.get("rsi_14")
         if rsi is not None:
-            values["rsi_14"] = (float(rsi), "module_03")
+            try:
+                values["rsi_14"] = (float(rsi), "module_03")
+            except (ValueError, TypeError):
+                pass
 
-        # SMAs
+        # SMAs — try sma_50, sma50, nested sma.50, etc.
         for period in (50, 200):
             key = f"sma_{period}"
             val = m03.get(key)
+            if val is None:
+                val = m03.get(f"sma{period}")  # no underscore variant
             if val is None:
                 sma_block = m03.get("sma", {})
                 if isinstance(sma_block, dict):
                     val = sma_block.get(str(period), sma_block.get(period))
             if val is not None:
-                values[key] = (float(val), "module_03")
+                try:
+                    values[key] = (float(val), "module_03")
+                except (ValueError, TypeError):
+                    pass
 
-        # MACD
+        # MACD — only extract numeric values, skip string signals like "BULLISH"
         macd_block = m03.get("macd", {})
         if isinstance(macd_block, dict):
             ml = macd_block.get("macd_line", macd_block.get("line", macd_block.get("macd")))
@@ -138,19 +153,25 @@ def extract_our_values(module_data):
             ml = None
             ms = None
         if ml is None:
-            ml = m03.get("macd_line")
+            ml = m03.get("macd_line", m03.get("macd_value"))
         if ms is None:
-            ms = m03.get("macd_signal")
-        try:
-            if ml is not None:
-                values["macd_line"] = (float(ml), "module_03")
-        except (ValueError, TypeError):
-            pass
-        try:
-            if ms is not None:
-                values["macd_signal"] = (float(ms), "module_03")
-        except (ValueError, TypeError):
-            pass
+            ms = m03.get("macd_signal_value", m03.get("macd_signal"))
+        for name, val in [("macd_line", ml), ("macd_signal", ms)]:
+            if val is not None:
+                try:
+                    fval = float(val)
+                    values[name] = (fval, "module_03")
+                except (ValueError, TypeError):
+                    pass  # skip string values like "BULLISH"
+
+        # Ichimoku numeric values
+        for ichi_key in ("ichimoku_tenkan", "ichimoku_kijun"):
+            val = m03.get(ichi_key)
+            if val is not None:
+                try:
+                    values[ichi_key] = (float(val), "module_03")
+                except (ValueError, TypeError):
+                    pass
 
     # Module 05: cross-asset correlations
     m05 = module_data.get("module_05", {})
@@ -185,6 +206,8 @@ TOLERANCE_KEYS = {
     "us_10y":     "spread_pct",
     "jp_10y":     "spread_pct",
     "rate_spread": "spread_pct",
+    "ichimoku_tenkan": "ichimoku",
+    "ichimoku_kijun":  "ichimoku",
 }
 # Correlation indicators match prefix "corr_*" -> "correlation"
 
@@ -256,6 +279,25 @@ def run_validation(date_str, no_push=False):
     if sources_cfg.get("tradingview", True):
         from scripts.validation_sources import fetch_tradingview
         external["tradingview"] = fetch_tradingview()
+
+    # Derive rate_spread from us_10y and jp_10y if both available in a source
+    for src_name, vals in external.items():
+        if "us_10y" in vals and "jp_10y" in vals and "rate_spread" not in vals:
+            vals["rate_spread"] = vals["us_10y"] - vals["jp_10y"]
+    # Also try cross-source: best us_10y + best jp_10y
+    if not any("rate_spread" in v for v in external.values()):
+        best_us = next((v["us_10y"] for v in external.values() if "us_10y" in v), None)
+        best_jp = next((v["jp_10y"] for v in external.values() if "jp_10y" in v), None)
+        if best_us is not None and best_jp is not None:
+            # Add derived spread to a synthetic source
+            external.setdefault("derived", {})["rate_spread"] = best_us - best_jp
+
+    # Source health summary
+    for src_name, vals in external.items():
+        count = len(vals)
+        print(f"  [{src_name}] {'OK' if vals else 'FAILED'} — {count} indicators")
+    if not any(external.values()):
+        print("  WARNING: All sources failed — all results will be SKIP")
 
     # 3. Compare each indicator against each source
     results = []  # list of comparison dicts for push / display

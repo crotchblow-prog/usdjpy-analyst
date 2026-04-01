@@ -58,7 +58,8 @@ export interface Scenario {
 
 export interface Scorecard {
   id: string;
-  report_id: string;
+  report_id: string | null;
+  date: string | null;
   window_start: string | null;
   window_end: string | null;
   actual_high: number | null;

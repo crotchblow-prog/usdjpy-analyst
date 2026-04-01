@@ -857,13 +857,15 @@ def compute_confluence_score(
     # Clamp
     score = max(0, score)
 
-    # Grade
+    # Grade — calibrated so A is rare, B is tradeable, C is caution
     if score >= 5:
-        grade = "A+"
+        grade = "A"
     elif score >= 3:
         grade = "B"
-    elif score >= 1:
+    elif score >= 2:
         grade = "C"
+    elif score >= 1:
+        grade = "D"
     else:
         grade = "NO SETUP"
 
@@ -1009,11 +1011,18 @@ def compute_entry_plan(
     liquidity_map: list,
     pd_details: dict,
     buffer_pips: float = 10,
+    atr_1h: float = None,
 ):
     """
     Compute entry, stop loss, and targets.
+    Stop buffer is ATR-based when available: max(ATR_1H * 0.5, 5 pips).
     Returns entry plan dict or None if R:R < 1:2.
     """
+    # ATR-based stop buffer adapts to volatility:
+    # Asian session ATR ~12 pips → buffer ~6 pips
+    # London session ATR ~25 pips → buffer ~12 pips
+    if atr_1h is not None and atr_1h > 0:
+        buffer_pips = max(atr_1h * 100 * 0.5, 5)  # ATR in yen → pips, halved, floor 5
     buffer = buffer_pips * 0.01  # JPY pair
 
     if bias == "LONG":

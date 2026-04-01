@@ -53,8 +53,8 @@ def fetch_yahoo(config):
             delta = close.diff()
             gain = delta.clip(lower=0)
             loss = -delta.clip(upper=0)
-            avg_gain = gain.rolling(window=rsi_period).mean()
-            avg_loss = loss.rolling(window=rsi_period).mean()
+            avg_gain = gain.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
             rs = avg_gain / avg_loss.replace(0, np.nan)
             rsi_series = 100 - (100 / (1 + rs))
             result["rsi_14"] = float(rsi_series.iloc[-1])
@@ -78,25 +78,50 @@ def fetch_yahoo(config):
             kijun_low = low.rolling(kijun_period).min()
             result["ichimoku_kijun"] = float(((kijun_high + kijun_low) / 2).iloc[-1])
 
-        # --- Cross-asset spots ---
-        cross_assets = {
-            "^GSPC": "spot_sp500",
-            "^N225": "spot_nikkei",
-            "GC=F": "spot_gold",
-            "^VIX": "spot_vix",
-            "CL=F": "spot_wti",
-            "DX-Y.NYB": "spot_dxy",
+        # --- Bond yields ---
+        yield_tickers = {
+            "^TNX": "us_10y",   # US 10Y yield (Yahoo returns as %, e.g. 4.35)
         }
-        for ticker, key in cross_assets.items():
+        for ticker, key in yield_tickers.items():
             try:
                 df = yf.download(ticker, period="5d", interval="1d", auto_adjust=True, progress=False)
                 if not df.empty:
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = df.columns.get_level_values(0)
-                    val = df["Close"].dropna().iloc[-1]
-                    result[key] = float(val)
+                    val = float(df["Close"].dropna().iloc[-1])
+                    result[key] = val
             except Exception:
-                pass  # skip individual ticker failures silently
+                pass
+
+        # --- Cross-asset spots + correlations ---
+        cross_assets = {
+            "^GSPC": ("spot_sp500", "corr_sp500"),
+            "^N225": ("spot_nikkei", "corr_nikkei"),
+            "GC=F": ("spot_gold", "corr_gold"),
+            "^VIX": ("spot_vix", "corr_vix"),
+            "CL=F": ("spot_wti", "corr_oil"),
+            "DX-Y.NYB": ("spot_dxy", None),
+        }
+        usdjpy_returns = close.pct_change().dropna()
+        for ticker, (spot_key, corr_key) in cross_assets.items():
+            try:
+                df = yf.download(ticker, period="3mo", interval="1d", auto_adjust=True, progress=False)
+                if not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    asset_close = df["Close"].dropna()
+                    result[spot_key] = float(asset_close.iloc[-1])
+                    # Compute 30-day rolling correlation with USD/JPY
+                    if corr_key:
+                        asset_returns = asset_close.pct_change().dropna()
+                        # Align indices
+                        aligned = pd.concat([usdjpy_returns, asset_returns], axis=1, join="inner")
+                        if len(aligned) >= 30:
+                            corr = aligned.iloc[-30:].corr().iloc[0, 1]
+                            if not np.isnan(corr):
+                                result[corr_key] = round(float(corr), 3)
+            except Exception:
+                pass
 
         print(f"[yahoo] Fetched {len(result)} indicators")
         return result
@@ -106,79 +131,160 @@ def fetch_yahoo(config):
         return {}
 
 
+def _scrape_investing_yield(url, key):
+    """Scrape a single yield value from an Investing.com bond page."""
+    import requests
+    from bs4 import BeautifulSoup
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.investing.com/",
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=20)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Look for the main price/yield value on the page
+        # Investing.com bond pages show yield in a prominent element
+        for selector in [
+            {"attrs": {"data-test": "instrument-price-last"}},
+            {"class_": "text-5xl"},
+            {"class_": "last-price-value"},
+        ]:
+            tag = soup.find(**selector)
+            if tag:
+                try:
+                    return {key: float(tag.get_text(strip=True).replace(",", ""))}
+                except ValueError:
+                    pass
+
+        # Fallback: search for a large number near "Yield" or "Last"
+        for text in soup.find_all(string=lambda t: t and ("Yield" in t or "Last" in t)):
+            parent = text.parent
+            sibling = parent.find_next_sibling()
+            if sibling:
+                try:
+                    return {key: float(sibling.get_text(strip=True).replace(",", ""))}
+                except ValueError:
+                    pass
+
+    except Exception:
+        pass
+    return {}
+
+
 def fetch_investing():
     """
-    Scrape technical indicators from investing.com USD/JPY technical page.
-    Returns: rsi_14, sma_50, sma_200, macd_line
+    Scrape technical indicators from investing.com USD/JPY technical page
+    and bond yields from bond pages.
+    Returns: rsi_14, sma_50, sma_200, macd_line, jp_10y
+    Retries up to 3 times with exponential backoff on failure.
     """
-    try:
-        import requests
-        from bs4 import BeautifulSoup
+    import time
+    import requests
+    from bs4 import BeautifulSoup
 
-        url = "https://www.investing.com/currencies/usd-jpy-technical"
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Referer": "https://www.investing.com/",
-        }
+    # Scrape JP 10Y yield (independent of technicals — don't let one break the other)
+    jp10y = _scrape_investing_yield(
+        "https://www.investing.com/rates-bonds/japan-10-year-bond-yield", "jp_10y"
+    )
 
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
+    url = "https://www.investing.com/currencies/usd-jpy-technical"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.investing.com/",
+    }
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        result = {}
+    # Map of label substrings to indicator keys
+    label_map = {
+        "RSI(14)": "rsi_14",
+        "MACD(12,26)": "macd_line",
+        "SMA50": "sma_50",
+        "SMA200": "sma_200",
+    }
 
-        # Map of label substrings to indicator keys
-        label_map = {
-            "RSI(14)": "rsi_14",
-            "MACD(12,26)": "macd_line",
-            "SMA50": "sma_50",
-            "SMA200": "sma_200",
-        }
+    for attempt in range(3):
+        try:
+            response = requests.get(url, headers=headers, timeout=20)
+            response.raise_for_status()
 
-        # Try to find tables containing technical indicator data
-        tables = soup.find_all("table")
-        for table in tables:
-            rows = table.find_all("tr")
-            for row in rows:
-                cells = row.find_all("td")
-                if len(cells) >= 2:
-                    label_text = cells[0].get_text(strip=True)
-                    for key_substr, indicator in label_map.items():
-                        if key_substr in label_text and indicator not in result:
+            soup = BeautifulSoup(response.text, "html.parser")
+            result = {}
+
+            # Try to find tables containing technical indicator data
+            tables = soup.find_all("table")
+            for table in tables:
+                rows = table.find_all("tr")
+                for row in rows:
+                    cells = row.find_all("td")
+                    if len(cells) >= 2:
+                        label_text = cells[0].get_text(strip=True)
+                        for key_substr, indicator in label_map.items():
+                            if key_substr in label_text and indicator not in result:
+                                try:
+                                    val_text = cells[1].get_text(strip=True).replace(",", "")
+                                    result[indicator] = float(val_text)
+                                except ValueError:
+                                    pass
+
+            # Fallback: search for indicator values in divs/spans if table parsing found nothing
+            if not result:
+                for key_substr, indicator in label_map.items():
+                    tags = soup.find_all(string=lambda text: text and key_substr in text)
+                    for tag in tags:
+                        parent = tag.parent
+                        sibling = parent.find_next_sibling()
+                        if sibling:
                             try:
-                                val_text = cells[1].get_text(strip=True).replace(",", "")
+                                val_text = sibling.get_text(strip=True).replace(",", "")
                                 result[indicator] = float(val_text)
+                                break
                             except ValueError:
                                 pass
 
-        # Fallback: search for indicator values in divs/spans if table parsing found nothing
-        if not result:
-            for key_substr, indicator in label_map.items():
-                tags = soup.find_all(string=lambda text: text and key_substr in text)
-                for tag in tags:
-                    parent = tag.parent
-                    # Look for a sibling or nearby element with a numeric value
-                    sibling = parent.find_next_sibling()
-                    if sibling:
-                        try:
-                            val_text = sibling.get_text(strip=True).replace(",", "")
-                            result[indicator] = float(val_text)
-                            break
-                        except ValueError:
-                            pass
+            if result:
+                result.update(jp10y)
+                print(f"[investing] Fetched {len(result)} indicators")
+                return result
 
-        print(f"[investing] Fetched {len(result)} indicators")
-        return result
+            # Empty result — parsing may have failed, retry
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
 
-    except Exception as e:
-        print(f"[investing] Failed: {e}")
-        return {}
+            # Technicals empty but JP 10Y might have succeeded
+            if jp10y:
+                print(f"[investing] Fetched {len(jp10y)} indicators (technicals empty, bonds OK)")
+                return jp10y
+            print("[investing] Fetched 0 indicators (parsing returned empty)")
+            return {}
+
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            # Technicals failed but JP 10Y might have succeeded
+            if jp10y:
+                print(f"[investing] Technicals failed, bonds OK ({len(jp10y)} indicators): {e}")
+                return jp10y
+            print(f"[investing] Failed after 3 attempts: {e}")
+            return {}
+
+    return jp10y or {}
 
 
 def fetch_tradingview():
@@ -187,6 +293,19 @@ def fetch_tradingview():
     Returns: spot_usdjpy, rsi_14, sma_50, sma_200, macd_line, macd_signal,
              ichimoku_kijun, ichimoku_tenkan
     """
+    # Single source of truth: (TV column name, our indicator name or None to skip)
+    TV_COLUMNS = [
+        ("close",          "spot_usdjpy"),
+        ("RSI",            "rsi_14"),
+        ("RSI[1]",         None),            # previous RSI — skip
+        ("SMA50",          "sma_50"),
+        ("SMA200",         "sma_200"),
+        ("MACD.macd",      "macd_line"),
+        ("MACD.signal",    "macd_signal"),
+        ("Ichimoku.BLine", "ichimoku_kijun"),   # Kijun-sen / Base Line
+        ("Ichimoku.CLine", "ichimoku_tenkan"),   # Tenkan-sen / Conversion Line
+    ]
+
     try:
         import requests
 
@@ -195,17 +314,7 @@ def fetch_tradingview():
             "symbols": {
                 "tickers": ["FX:USDJPY"]
             },
-            "columns": [
-                "close",
-                "RSI",
-                "RSI[1]",
-                "SMA50",
-                "SMA200",
-                "MACD.macd",
-                "MACD.signal",
-                "Ichimoku.BLine",
-                "Ichimoku.CLine",
-            ]
+            "columns": [col for col, _ in TV_COLUMNS],
         }
         headers = {
             "Content-Type": "application/json",
@@ -229,26 +338,14 @@ def fetch_tradingview():
             return {}
 
         values = rows[0].get("d", [])
-        # Map positional columns to indicator names
-        column_map = [
-            "spot_usdjpy",   # close
-            "rsi_14",        # RSI
-            None,            # RSI[1] (previous RSI — not needed, skip)
-            "sma_50",        # SMA50
-            "sma_200",       # SMA200
-            "macd_line",     # MACD.macd
-            "macd_signal",   # MACD.signal
-            "ichimoku_kijun",  # Ichimoku.BLine (Kijun-sen / Base Line)
-            "ichimoku_tenkan", # Ichimoku.CLine (Tenkan-sen / Conversion Line)
-        ]
 
         result = {}
-        for i, name in enumerate(column_map):
-            if name is None:
+        for i, (_, indicator) in enumerate(TV_COLUMNS):
+            if indicator is None:
                 continue
             if i < len(values) and values[i] is not None:
                 try:
-                    result[name] = float(values[i])
+                    result[indicator] = float(values[i])
                 except (TypeError, ValueError):
                     pass
 

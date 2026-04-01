@@ -577,16 +577,33 @@ print(f"  SPX corr={corr_spx}, Nikkei={corr_nikkei}, Gold={corr_gold}, VIX={corr
 # ═══════════════════════════════════════════════════════════════════════════════
 print("▶ Module 07 — Checklist")
 
-def score(bias, conf):
-    if bias in ("BULLISH",):
-        return 2 if conf == "HIGH" else 1
-    if bias in ("BEARISH",):
-        return -2 if conf == "HIGH" else -1
+# Intraday-weighted scoring: Technicals drive the signal, macro/cross-asset are context.
+# Technicals: ±3 (HIGH=3, MED=2, LOW=1) — primary driver for intraday
+# Macro/Cross-Asset: ±1 (HIGH=1, MED/LOW=1/0) — background context
+def score_primary(bias, conf):
+    """Score for primary signal (technicals) — heavier weight."""
+    if bias == "BULLISH":
+        return {"HIGH": 3, "MEDIUM": 2}.get(conf, 1)
+    if bias == "BEARISH":
+        return {"HIGH": -3, "MEDIUM": -2}.get(conf, -1)
     return 0
 
-weighted = (score(macro_bias, macro_conf) +
-            score(tech_bias,  tech_conf) +
-            score(cross_bias, cross_conf))
+def score_context(bias, conf):
+    """Score for context signals (macro, cross-asset) — lighter weight."""
+    if bias == "BULLISH":
+        return 1 if conf in ("HIGH", "MEDIUM") else 0
+    if bias == "BEARISH":
+        return -1 if conf in ("HIGH", "MEDIUM") else 0
+    return 0
+
+tech_score = score_primary(tech_bias, tech_conf)
+macro_score = score_context(macro_bias, macro_conf)
+cross_score = score_context(cross_bias, cross_conf)
+weighted = tech_score + macro_score + cross_score
+
+# Daily max is ±5 (tech ±3, macro ±1, cross ±1); weekly adds ±3 more
+daily_max = 5
+total_framework = 6
 
 if   weighted >= 4:  overall = "STRONG BULLISH"
 elif weighted >= 2:  overall = "MODERATE BULLISH"
@@ -594,13 +611,10 @@ elif weighted >= -1: overall = "NEUTRAL / NO EDGE"
 elif weighted >= -3: overall = "MODERATE BEARISH"
 else:                overall = "STRONG BEARISH"
 
-# ── Conviction calculation with module-coverage cap ──
-# Count populated modules out of the full 6-module framework.
-# Daily runs only populate 01, 03, 05; weekly adds 02, 04, 06.
+# ── Conviction — based on daily modules only (no coverage cap penalty) ──
 modules_available = sum(1 for b in [macro_bias, tech_bias, cross_bias] if b not in ("N/A",))
-total_framework = 6  # full framework size
 
-# Score-based conviction (before coverage cap)
+# Score-based conviction using daily max, not framework max
 abs_score = abs(weighted)
 if abs_score >= 4:
     conviction = "HIGH"
@@ -617,26 +631,12 @@ if div_check == "DIVERGENCE":
 if overall == "NEUTRAL / NO EDGE" and conviction == "HIGH":
     conviction = "MEDIUM"
 
-# ── Module-coverage cap (Rule 1) ──
-# With incomplete data, cap conviction regardless of score agreement.
-conviction_cap = None
-if modules_available < 3:
-    conviction_cap = "LOW"
-elif modules_available < 4:
-    conviction_cap = "MEDIUM"
-# else: no cap (4+ modules allow HIGH)
-
+# ── Module-coverage note (informational, no longer caps conviction) ──
 conviction_cap_note = ""
-if conviction_cap is not None:
-    rank = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
-    if rank.get(conviction, 0) > rank.get(conviction_cap, 0):
-        conviction = conviction_cap
-    # Always show the cap note when the framework is incomplete —
-    # this explains to the user why HIGH isn't possible even if
-    # the score-based conviction was already at or below the cap.
+if modules_available < 3:
     conviction_cap_note = (
         f"{modules_available}/{total_framework} modules active — "
-        f"conviction capped at {conviction_cap}"
+        f"run /usdjpy-weekly for full scoring"
     )
 
 # ── Structural conflict safeguard (Rule 4) ──
@@ -1136,7 +1136,7 @@ cross_narrative = build_cross_narrative()
 
 report = f"""# USD/JPY Daily Analysis — {TODAY_STR}
 
-> **{overall.upper()}** | Conviction: **{conviction}** | Score: **{weighted:+d}/{'+6' if modules_available == 3 else '+12'}** | Modules: **{modules_available}/6** (daily)
+> **{overall.upper()}** | Conviction: **{conviction}** | Score: **{weighted:+d}/+{daily_max}** | Modules: **{modules_available}/6** (daily)
 
 ---
 
@@ -1235,8 +1235,8 @@ report = f"""# USD/JPY Daily Analysis — {TODAY_STR}
 | 6 | Seasonality | N/A | N/A | Weekly module |
 
 **Overall: {overall}**
-**Score: {weighted:+d} / +6** | **Conviction: {conviction}** | **Modules: {modules_available}/6**
-{"" if not conviction_cap_note else chr(10) + "⚠ " + conviction_cap_note + " — run /usdjpy-weekly for full scoring" + chr(10)}{"" if not structural_conflict_note else chr(10) + "⚠ " + structural_conflict_note + " — conviction downgraded" + chr(10)}
+**Score: {weighted:+d} / +{daily_max}** | **Conviction: {conviction}** | **Modules: {modules_available}/6**
+{"" if not conviction_cap_note else chr(10) + "⚠ " + conviction_cap_note + chr(10)}{"" if not structural_conflict_note else chr(10) + "⚠ " + structural_conflict_note + " — conviction downgraded" + chr(10)}
 ---
 
 ## Bottom Line

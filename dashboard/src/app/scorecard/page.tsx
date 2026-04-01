@@ -20,7 +20,7 @@ export default function ScorecardPage() {
       const res = await supabase
         .from("scorecard")
         .select("*, reports(date, direction, grade, setup_type)")
-        .order("window_start", { ascending: false })
+        .order("date", { ascending: false })
         .limit(50);
 
       if (res.data) setScorecards(res.data as ScorecardWithReport[]);
@@ -92,7 +92,7 @@ export default function ScorecardPage() {
                 <tbody className="divide-y divide-border">
                   {scorecards.map((sc) => (
                     <tr key={sc.id} className="hover:bg-bg-card-hover transition-colors">
-                      <td className="py-2 font-mono text-xs">{sc.reports?.date ?? "-"}</td>
+                      <td className="py-2 font-mono text-xs">{sc.date ?? sc.reports?.date ?? "-"}</td>
                       <td className="py-2"><OutcomeBadge outcome={sc.primary_outcome} /></td>
                       <td className="py-2"><OutcomeBadge outcome={sc.alternative_outcome} /></td>
                       <td className="py-2"><OutcomeBadge outcome={sc.tail_risk_outcome} /></td>

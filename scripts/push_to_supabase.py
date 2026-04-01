@@ -501,13 +501,24 @@ def _parse_module_data(content):
             sc = re.search(r"\|\s*SMA50 vs SMA200\s*\|\s*(\w+)", sec)
         m03["sma_cross"] = sc.group(1).upper() if sc else None
 
-        # MACD signal — daily: | MACD | 0.83 / 0.84 | BEARISH |  weekly: | MACD | Above signal | Bullish |
+        # MACD — daily: | MACD | 0.8834 / 0.8555 | BULLISH |
+        # Extract numeric values (line / signal) and direction
+        macd_nums = re.search(r"\|\s*MACD\s*\|\s*([\d.-]+)\s*/\s*([\d.-]+)", sec)
+        if macd_nums:
+            m03["macd_line"] = float(macd_nums.group(1))
+            m03["macd_signal_value"] = float(macd_nums.group(2))
         mc = re.search(r"\|\s*MACD\s*\|.*?\|\s*(\w+)\s*\|", sec)
         m03["macd_signal"] = mc.group(1).upper() if mc else None
 
         # Ichimoku — daily: | Ichimoku Cloud | ABOVE |  weekly: same
         ic = re.search(r"\|\s*Ichimoku Cloud\s*\|\s*(\w+)", sec)
         m03["ichimoku"] = ic.group(1).upper() if ic else None
+
+        # Ichimoku numeric — from line: **Ichimoku:** Tenkan 158.98 | Kijun 157.43
+        ichi_vals = re.search(r"Tenkan\s+([\d.]+)\s*\|\s*Kijun\s+([\d.]+)", sec)
+        if ichi_vals:
+            m03["ichimoku_tenkan"] = float(ichi_vals.group(1))
+            m03["ichimoku_kijun"] = float(ichi_vals.group(2))
 
         module_data["module_03"] = m03
 

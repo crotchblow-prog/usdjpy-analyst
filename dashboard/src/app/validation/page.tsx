@@ -19,6 +19,30 @@ const MODULE_NAMES: Record<string, TranslationKey> = {
   "module_08": "validation.module08",
 };
 
+const INDICATOR_LABELS: Record<string, string> = {
+  spot_usdjpy: "USD/JPY Spot",
+  spot_dxy: "DXY",
+  us_10y: "US 10Y Yield",
+  jp_10y: "JP 10Y Yield",
+  rate_spread: "Rate Spread",
+  rsi_14: "RSI (14)",
+  sma_50: "SMA 50",
+  sma_200: "SMA 200",
+  macd_line: "MACD Line",
+  macd_signal: "MACD Signal",
+  ichimoku_tenkan: "Ichimoku Tenkan",
+  ichimoku_kijun: "Ichimoku Kijun",
+  spot_sp500: "S&P 500",
+  spot_nikkei: "Nikkei 225",
+  spot_gold: "Gold",
+  spot_vix: "VIX",
+  spot_wti: "WTI Oil",
+};
+
+function formatIndicator(key: string): string {
+  return INDICATOR_LABELS[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     PASS: "bg-bull/20 text-bull",
@@ -115,15 +139,22 @@ export default function ValidationPage() {
   const passRateColor =
     passRate >= 90 ? "text-bull" : passRate >= 75 ? "text-yellow-400" : "text-bear";
 
-  // Last checked timestamp
-  const lastChecked =
-    results.length > 0
-      ? new Date(
-          results.reduce((latest, r) =>
-            r.checked_at > latest.checked_at ? r : latest
-          ).checked_at
-        ).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })
-      : null;
+  // Last checked timestamp (guard against null checked_at)
+  const lastChecked = (() => {
+    const withTimestamp = results.filter((r) => r.checked_at);
+    if (withTimestamp.length === 0) return null;
+    const latest = withTimestamp.reduce((a, b) =>
+      a.checked_at > b.checked_at ? a : b
+    );
+    return new Date(latest.checked_at).toLocaleString("ja-JP", {
+      timeZone: "Asia/Tokyo",
+    });
+  })();
+
+  // Status counts for summary
+  const warnCount = results.filter((r) => r.status === "WARN").length;
+  const failCount = results.filter((r) => r.status === "FAIL").length;
+  const skipCount = results.filter((r) => r.status === "SKIP").length;
 
   // Group by module
   const moduleGroups: ModuleGroup[] = Object.entries(
@@ -185,13 +216,31 @@ export default function ValidationPage() {
           {/* Summary Card */}
           <Card>
             <CardHeader>{t("validation.summary")}</CardHeader>
-            <div className="flex items-center gap-6">
+            <div className="flex items-center gap-6 flex-wrap">
               <div>
                 <p className="text-xs text-text-muted mb-1">{t("validation.passRate")}</p>
                 <p className={`text-3xl font-bold font-mono ${passRateColor}`}>
                   {passed}/{total}
                 </p>
                 <p className={`text-sm font-mono ${passRateColor}`}>{passRate}%</p>
+              </div>
+              <div className="flex gap-3">
+                <div className="text-center">
+                  <StatusBadge status="PASS" />
+                  <p className="text-sm font-mono mt-1">{passed}</p>
+                </div>
+                <div className="text-center">
+                  <StatusBadge status="WARN" />
+                  <p className="text-sm font-mono mt-1">{warnCount}</p>
+                </div>
+                <div className="text-center">
+                  <StatusBadge status="FAIL" />
+                  <p className="text-sm font-mono mt-1">{failCount}</p>
+                </div>
+                <div className="text-center">
+                  <StatusBadge status="SKIP" />
+                  <p className="text-sm font-mono mt-1">{skipCount}</p>
+                </div>
               </div>
               {lastChecked && (
                 <div>
@@ -268,7 +317,7 @@ export default function ValidationPage() {
                                   : ""
                               }
                             >
-                              <td className="px-4 py-2 font-mono text-text-primary">{r.indicator}</td>
+                              <td className="px-4 py-2 font-mono text-text-primary">{formatIndicator(r.indicator)}</td>
                               <td className="px-4 py-2 font-mono text-right text-text-secondary">
                                 {r.our_value != null ? r.our_value.toFixed(4) : "-"}
                               </td>

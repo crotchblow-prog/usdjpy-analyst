@@ -324,9 +324,14 @@ def run_full_analysis():
 
     if direction == "NEUTRAL":
         print("  WARNING: Bias is NEUTRAL — running as Range/Counter-trend (reduced probability)")
-        # Soft gate: still run, but note it
-        # Try to infer direction from technicals context
         direction = _infer_direction_from_context(bias_info)
+
+    # Kill switch: skip SMC on high-risk event days (FOMC/BOJ decision, NFP)
+    kill_events = bias_info.get("kill_events", [])
+    if kill_events:
+        print(f"  ⚠ KILL SWITCH: {', '.join(kill_events)} — no SMC entry today")
+        print("  High-impact events dominate price action; SMC levels unreliable.")
+        # Still generate the report but mark as no-trade
 
     # Step 2: Fetch data
     print("\n[2/5] Fetching intraday data...")
@@ -406,12 +411,23 @@ def run_full_analysis():
     # Step 5: Compute entry plan + confluence
     print("\n[5/5] Computing entry plan...")
 
+    # Compute 1H ATR for adaptive stop sizing
+    atr_1h = None
+    if df_1h is not None and len(df_1h) >= 14:
+        tr = pd.concat([
+            df_1h["High"] - df_1h["Low"],
+            (df_1h["High"] - df_1h["Close"].shift()).abs(),
+            (df_1h["Low"] - df_1h["Close"].shift()).abs(),
+        ], axis=1).max(axis=1)
+        atr_1h = float(tr.rolling(14).mean().iloc[-1])
+
     entry_plan = None
     if entry_zone:
         entry_plan = compute_entry_plan(
             direction, entry_zone,
             analysis_4h["swing_highs"], analysis_4h["swing_lows"],
             liquidity_map, pd_details,
+            atr_1h=atr_1h,
         )
 
     # Check confluence factors
@@ -468,11 +484,32 @@ def run_full_analysis():
         spread_widening=False,
     )
 
-    if entry_plan:
+    # ── No-trade filter ──────────────────────────────────────────────────
+    # If best zone is >30 pips away AND no session catalyst, mark as NO SETUP.
+    # A professional trader waits rather than forcing entries.
+    zone_distance = entry_zone.get("distance_pips", 999) if entry_zone else 999
+    has_catalyst = (
+        scenario.get("scenario") in ("A", "D") or  # intervention bounce or fix fade
+        near_fix or near_intervention
+    )
+    no_trade = False
+    no_trade_reason = ""
+    if entry_plan is None and zone_distance > 30 and not has_catalyst:
+        no_trade = True
+        no_trade_reason = f"DISTANT — best zone {zone_distance:.0f} pips away, no session catalyst"
+        confluence["grade"] = "NO SETUP"
+    elif entry_plan is None:
+        no_trade = True
+        no_trade_reason = "No valid entry plan (R:R < 1:2 or no zones)"
+        if confluence["score"] < 1:
+            confluence["grade"] = "NO SETUP"
+
+    if no_trade:
+        print(f"  ⚠ {no_trade_reason}")
+    elif entry_plan:
+        atr_label = f" | ATR(1H): {atr_1h*100:.0f}p" if atr_1h else ""
         print(f"  Entry: {entry_plan['entry']:.2f} | Stop: {entry_plan['stop']:.2f} | "
-              f"T1: {entry_plan['t1_price']:.2f} (R:R 1:{entry_plan['t1_rr']:.1f})")
-    else:
-        print("  No valid entry plan (R:R < 1:2 or no zones)")
+              f"T1: {entry_plan['t1_price']:.2f} (R:R 1:{entry_plan['t1_rr']:.1f}){atr_label}")
 
     print(f"  Confluence: {confluence['score']:.1f} — Grade {confluence['grade']}")
 
@@ -483,6 +520,9 @@ def run_full_analysis():
         "bias": bias_info,
         "direction": direction,
         "confidence": confidence,
+        "no_trade": no_trade,
+        "no_trade_reason": no_trade_reason,
+        "atr_1h": atr_1h,
         "analysis_4h": analysis_4h,
         "analysis_1h": analysis_1h,
         "analysis_15m": analysis_15m,
@@ -603,9 +643,23 @@ def _generate_playbook(results):
     sign = 1.0 if direction == "LONG" else -1.0
 
     # ── Compute probabilities ────────────────────────────────────────────
-    p_primary = 0.45
+    p_primary = 0.50
     p_alt = 0.35
-    p_tail = 0.20
+    # Tail risk: distance-based intervention probability (replaces flat 20%)
+    # >162: 25%, 160-162: 10-20% (linear), 158-160: 3-8%, <158: 1%
+    if price >= 162:
+        p_tail = 0.25
+    elif price >= 160:
+        p_tail = 0.10 + (price - 160) / 2 * 0.10  # 10-20%
+    elif price >= 158:
+        p_tail = 0.03 + (price - 158) / 2 * 0.05  # 3-8%
+    else:
+        p_tail = 0.01
+    # Rebalance: take tail budget from primary+alt proportionally
+    excess = p_primary + p_alt + p_tail - 1.0
+    if excess > 0:
+        p_primary -= excess * 0.6
+        p_alt -= excess * 0.4
 
     # Confidence adjustment
     if confidence == "HIGH":
@@ -631,17 +685,15 @@ def _generate_playbook(results):
        (direction == "SHORT" and pd_zone == "PREMIUM"):
         p_primary += 0.05
 
-    # Risk alerts
+    # Risk alerts (no longer double-count intervention — already in tail base)
     n_alerts = len(bias.get("risk_alerts", []))
     if n_alerts >= 2:
-        p_tail += 0.05; p_primary -= 0.05
-    if bias.get("intervention_risk"):
-        p_tail += 0.05; p_alt -= 0.05
+        p_tail += 0.03; p_primary -= 0.03
 
-    # Clamp and normalize — primary must always be the highest (floor 35%)
-    p_primary = max(0.35, min(0.55, p_primary))
+    # Clamp and normalize
+    p_primary = max(0.35, min(0.65, p_primary))
     p_alt = max(0.10, min(0.40, p_alt))
-    p_tail = max(0.10, min(0.30, p_tail))
+    p_tail = max(0.01, min(0.30, p_tail))
     total = p_primary + p_alt + p_tail
     p_primary = round(p_primary / total, 2)
     p_alt = round(p_alt / total, 2)
@@ -1066,15 +1118,47 @@ def _section_confirmation(r):
 """
 
 
+def _compute_position_size(risk_pips, grade, config):
+    """Compute lot size based on risk management config."""
+    rm = config.get("risk_management", {})
+    account = rm.get("account_size", 50000)
+    risk_pct = rm.get("risk_per_trade", 0.01)
+    scaling = rm.get("scaling", {})
+
+    grade_scale = scaling.get(grade, scaling.get(grade[0] if grade else "D", 0))
+    if isinstance(grade_scale, str):
+        grade_scale = float(grade_scale)
+
+    risk_usd = account * risk_pct * grade_scale
+    # USDJPY: 1 standard lot (100,000 units) → 1 pip = ~$6.30 (at 158)
+    pip_value_per_lot = 6.30  # approximate for USDJPY
+    if risk_pips > 0 and pip_value_per_lot > 0:
+        lots = risk_usd / (risk_pips * pip_value_per_lot)
+        lots = round(lots, 2)
+    else:
+        lots = 0
+
+    return {
+        "lots": lots,
+        "risk_usd": round(risk_usd, 0),
+        "risk_pct": risk_pct * grade_scale * 100,
+        "grade_scale": grade_scale,
+    }
+
+
 def _section_entry_plan(r):
-    """Entry plan table."""
+    """Entry plan table with position sizing."""
     ep = r["entry_plan"]
     cf = r["confluence"]
+    no_trade = r.get("no_trade", False)
+    no_trade_reason = r.get("no_trade_reason", "")
+    atr_1h = r.get("atr_1h")
 
-    if ep is None:
+    if no_trade or ep is None:
+        reason = no_trade_reason or "No valid entry — zone too far or R:R below 1:2 minimum."
         return f"""### Entry Plan
 
-**No valid entry** — either no zone found, or risk:reward below 1:2 minimum.
+**⚠ {reason}**
 
 **Confluence Score:** {cf['score']:.1f} — Grade **{cf['grade']}**
 **Scoring Details:**
@@ -1087,6 +1171,22 @@ def _section_entry_plan(r):
     if ep.get("t2_price") is not None:
         t2_line = f"| Target 2 | {ep['t2_price']:.2f} ({ep.get('t2_type', '')}) | R:R = 1:{ep['t2_rr']:.1f} |"
 
+    atr_line = f"| ATR (1H) | {atr_1h*100:.0f} pips | Volatility reference |" if atr_1h else ""
+
+    # Position sizing
+    try:
+        import yaml
+        with open("config.yaml", "r") as f:
+            config = yaml.safe_load(f)
+        ps = _compute_position_size(ep["risk_pips"], cf["grade"], config)
+        sizing_line = (
+            f"\n**Position Size:** {ps['lots']:.2f} lots "
+            f"(risk ${ps['risk_usd']:.0f} = {ps['risk_pct']:.1f}% "
+            f"| grade {cf['grade']} scale: {ps['grade_scale']:.0%})"
+        )
+    except Exception:
+        sizing_line = ""
+
     return f"""### Entry Plan
 
 | Field | Value | Notes |
@@ -1096,8 +1196,10 @@ def _section_entry_plan(r):
 | Stop Loss | {ep['stop']:.2f} | {ep['risk_pips']:.0f} pips risk |
 | Target 1 | {ep['t1_price']:.2f} ({ep.get('t1_type', '')}) | R:R = 1:{ep['t1_rr']:.1f} |
 {t2_line}
+{atr_line}
 
 **Confluence Score:** {cf['score']:.1f} — Grade **{cf['grade']}**
+{sizing_line}
 
 **Scoring Details:**
 {chr(10).join('- ' + d for d in cf['details'])}
